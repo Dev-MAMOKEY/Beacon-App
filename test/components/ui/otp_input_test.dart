@@ -36,6 +36,9 @@ void main() {
     expect(entered, ['7329']);
   });
 
+  // 예전에는 0번 칸만 채우고 0번 칸만 확인했다 — 첫 칸만 지우는 구현도
+  // "모든 칸이 비워진다"는 이름을 달고 통과했다. 모든 칸을 채우고 모든 칸을
+  // 확인한다.
   testWidgets('reset하면 모든 칸이 비워진다', (tester) async {
     final controller = AppOtpController();
     await tester.pumpWidget(
@@ -43,14 +46,30 @@ void main() {
     );
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField).first, '1');
-    await tester.pump();
+    final fields = find.byType(TextField);
+    const digits = ['1', '2', '3', '4'];
+    for (var i = 0; i < digits.length; i++) {
+      await tester.enterText(fields.at(i), digits[i]);
+      await tester.pump();
+    }
+    for (var i = 0; i < digits.length; i++) {
+      expect(
+        tester.widget<TextField>(fields.at(i)).controller!.text,
+        digits[i],
+        reason: 'reset 전에는 $i번 칸이 실제로 채워져 있어야 검증이 의미가 있다',
+      );
+    }
 
     controller.reset();
     await tester.pump();
 
-    final first = tester.widget<TextField>(find.byType(TextField).first);
-    expect(first.controller!.text, isEmpty);
+    for (var i = 0; i < digits.length; i++) {
+      expect(
+        tester.widget<TextField>(fields.at(i)).controller!.text,
+        isEmpty,
+        reason: '$i번 칸이 남아 있으면 다음 입력이 옛 값과 섞인다',
+      );
+    }
   });
 
   testWidgets('빈 칸에서 backspace를 누르면 이전 칸으로 이동해 그 칸을 지운다', (tester) async {
