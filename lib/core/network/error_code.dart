@@ -50,3 +50,24 @@ enum ErrorCode {
     return ErrorCode.unknown;
   }
 }
+
+/// "자격 증명 자체가 죽었다" — 재시도가 아니라 재로그인이 필요하다는 뜻인
+/// 코드들의 공용 집합. [SessionController]와 [AuthInterceptor]가 이 판정을
+/// 여기 한 곳에서 공유한다 — 예전에는 SessionController 안에 사본이 있었고
+/// AuthInterceptor는 아예 분류를 하지 않았는데(무조건 만료), 두 곳이 서로
+/// 다른 정책을 갖게 되는 것 자체가 버그의 근원이었다.
+///
+/// 여기 없는 코드는 전부 일시적 실패로 취급된다(네트워크 단절, 5xx, 응답
+/// 파싱 실패 등) — 토큰을 지울 근거가 없다.
+const Set<ErrorCode> authFailureCodes = {
+  ErrorCode.invalidCredentials,
+  ErrorCode.tokenMissing,
+  ErrorCode.tokenExpired,
+  ErrorCode.tokenInvalid,
+  ErrorCode.refreshTokenExpired,
+  ErrorCode.refreshTokenInvalid,
+  ErrorCode.refreshTokenRevoked,
+  ErrorCode.memberNotFound,
+};
+
+bool isAuthFailureCode(ErrorCode code) => authFailureCodes.contains(code);

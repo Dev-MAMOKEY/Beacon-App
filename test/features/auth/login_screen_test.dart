@@ -6,6 +6,7 @@ import 'package:beacon_app/core/theme/app_theme.dart';
 import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/data/auth_repository.dart';
 import 'package:beacon_app/components/ui/button.dart';
+import 'package:beacon_app/components/ui/input.dart';
 import 'package:beacon_app/features/auth/presentation/login_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -65,6 +66,22 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('학번 또는 비밀번호가 올바르지 않습니다.'), findsOneWidget);
+
+    // 명세서 보안 요구사항: 어느 필드가 틀렸는지 노출하지 않는다. 메시지가
+    // 화면 어딘가에 있다는 것만으로는 부족하다 — 그 메시지를 AppInput의
+    // errorText(필드 밑줄 에러)로 꽂아 넣는 구현도 이 텍스트를 화면에
+    // 보여주긴 하지만 요구사항을 위반한다. 그런 구현이 아님을 직접
+    // 확인한다: 학번/비밀번호 두 AppInput 모두 errorText가 비어 있어야
+    // 한다(비밀번호는 AppPasswordInput 내부에 중첩된 AppInput이다).
+    final inputs = tester.widgetList<AppInput>(find.byType(AppInput));
+    expect(inputs, hasLength(2));
+    for (final input in inputs) {
+      expect(
+        input.errorText,
+        anyOf(isNull, isEmpty),
+        reason: '로그인 실패는 필드별 에러가 아니라 화면 단위 메시지여야 한다',
+      );
+    }
   });
 
   testWidgets('두 필드가 비어 있으면 로그인 버튼이 비활성이다', (tester) async {

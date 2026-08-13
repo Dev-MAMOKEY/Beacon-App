@@ -304,6 +304,34 @@ void main() {
       expect(state, isA<SessionUnavailable>());
       expect(container.read(sessionControllerProvider).hasError, isFalse);
     });
+
+    // 실 백엔드(/v3/api-docs)에서 확인한 /auth/refresh의 세 401 코드와
+    // MEMBER_NOT_FOUND(404) 각각을 개별로 핀 고정한다 — authFailureCodes에서
+    // 하나라도 빠지면(오타·실수로 삭제) 이 중 하나가 조용히 SessionUnavailable로
+    // 새면서 사용자가 재시도해도 절대 풀리지 않는 화면에 갇힌다.
+    for (final code in [
+      ErrorCode.refreshTokenExpired,
+      ErrorCode.refreshTokenInvalid,
+      ErrorCode.refreshTokenRevoked,
+      ErrorCode.memberNotFound,
+    ]) {
+      test('리프레시가 ${code.wire}로 실패하면 SignedOut이 되고 토큰이 지워진다', () async {
+        final store = InMemoryTokenStore();
+        await store.save(accessToken: 'a', refreshToken: 'r');
+        final container = _container(
+          repository: FakeAuthRepository(
+            refreshError: ApiException(code, '실패: ${code.wire}'),
+          ),
+          store: store,
+        );
+
+        final state = await container.read(sessionControllerProvider.future);
+
+        expect(state, isA<SessionSignedOut>());
+        expect(await store.readAccessToken(), isNull);
+        expect(await store.readRefreshToken(), isNull);
+      });
+    }
   });
 
   group('onAuthenticated', () {
@@ -350,6 +378,28 @@ void main() {
 
       expect(container.read(sessionControllerProvider).value, isA<SessionUnavailable>());
       expect(await store.readAccessToken(), 'a');
+    });
+
+    // 리뷰에서 뒤집힌 결정: 로그인 직후라도 fetchMe가 자격-증명-죽음 코드로
+    // 실패하면(MEMBER_NOT_FOUND 등) 재시도로 절대 복구되지 않는다 — 방금
+    // 발급된 토큰이 만료됐을 리 없고, 그 계정 자체가 없다는 뜻이기 때문이다.
+    // SessionUnavailable로 두면 사용자를 영원히 풀리지 않는 재시도 화면에
+    // 가둔다. _resolve()/refreshProfile()과 같은 분류를 적용해야 한다.
+    test('fetchMe가 자격-증명-죽음 오류(MEMBER_NOT_FOUND)면 토큰을 지우고 SignedOut이 된다', () async {
+      final store = InMemoryTokenStore();
+      final repository = FakeAuthRepository(
+        fetchMeError: const ApiException(ErrorCode.memberNotFound, '해당 회원이 존재하지 않습니다.'),
+      );
+      final container = _container(repository: repository, store: store);
+      await container.read(sessionControllerProvider.future);
+
+      await container
+          .read(sessionControllerProvider.notifier)
+          .onAuthenticated(const TokenResponse(accessToken: 'a', refreshToken: 'r'));
+
+      expect(container.read(sessionControllerProvider).value, isA<SessionSignedOut>());
+      expect(await store.readAccessToken(), isNull);
+      expect(await store.readRefreshToken(), isNull);
     });
   });
 
