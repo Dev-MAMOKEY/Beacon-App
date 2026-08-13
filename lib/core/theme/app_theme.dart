@@ -14,7 +14,12 @@ ThemeData buildAppTheme() {
     scaffoldBackgroundColor: colors.bg,
     colorScheme: ColorScheme.fromSeed(
       seedColor: colors.main,
+      primary: colors.main,
+      onPrimary: colors.white,
+      error: colors.red,
+      onError: colors.white,
       surface: colors.white,
+      onSurface: colors.gray3,
     ),
     extensions: const <ThemeExtension<dynamic>>[colors, typography],
   );
