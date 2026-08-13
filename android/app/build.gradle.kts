@@ -6,6 +6,7 @@ plugins {
 
 android {
     namespace = "com.mamokey.beacon"
+    // flutter_secure_storage 11.x가 compileSdk 37을 요구함 (Flutter 기본값은 36). flutter.compileSdkVersion으로 되돌리면 빌드가 다시 깨짐.
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
