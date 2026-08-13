@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/network/error_code.dart';
@@ -26,6 +28,10 @@ class FakeAuthRepository implements AuthRepository {
   int refreshCalls = 0;
   int fetchMeCalls = 0;
 
+  /// 설정되면 `refresh()`가 이 Completer가 완료될 때까지 멈춘다 — 실제
+  /// 경쟁 상태(진행 중인 판별)를 재현하기 위한 용도.
+  Completer<TokenResponse>? refreshGate;
+
   @override
   Future<TokenResponse> login({required String stdId, required String password}) async {
     return const TokenResponse(accessToken: 'a', refreshToken: 'r');
@@ -41,6 +47,8 @@ class FakeAuthRepository implements AuthRepository {
   @override
   Future<TokenResponse> refresh(String refreshToken) async {
     refreshCalls++;
+    final gate = refreshGate;
+    if (gate != null) return gate.future;
     if (refreshError != null) throw refreshError!;
     if (refreshFails) {
       throw const ApiException(ErrorCode.refreshTokenRevoked, '무효화됨');
@@ -102,6 +110,35 @@ class ClearFailsTokenStore implements TokenStore {
 
   @override
   Future<void> clear() async => throw Exception('keystore clear failed');
+}
+
+/// 가장 먼저 들어온 `save()` 호출만 [firstSaveGate]가 완료될 때까지 멈춘다.
+/// 이후 호출은 즉시 진행한다 — "먼저 시작했지만 늦게 끝나는 쓰기"를
+/// 재현하기 위한 용도. 나머지는 내부의 [InMemoryTokenStore]에 위임한다.
+class FirstSaveGatedTokenStore implements TokenStore {
+  FirstSaveGatedTokenStore(this._inner, this.firstSaveGate);
+
+  final InMemoryTokenStore _inner;
+  final Future<void> firstSaveGate;
+  int _saveCalls = 0;
+
+  @override
+  Future<String?> readAccessToken() => _inner.readAccessToken();
+
+  @override
+  Future<String?> readRefreshToken() => _inner.readRefreshToken();
+
+  @override
+  Future<void> save({required String accessToken, required String refreshToken}) async {
+    _saveCalls++;
+    if (_saveCalls == 1) {
+      await firstSaveGate;
+    }
+    await _inner.save(accessToken: accessToken, refreshToken: refreshToken);
+  }
+
+  @override
+  Future<void> clear() => _inner.clear();
 }
 
 ProviderContainer _container({
@@ -375,5 +412,76 @@ void main() {
     await container.read(sessionControllerProvider.future);
 
     expect(repository.refreshCalls, 2);
+  });
+
+  group('실제 경쟁 상태 — Completer로 겹치는 순서를 직접 재현한다', () {
+    test('진행 중인 판별이 있어도 signOut이 이기고, 뒤늦게 끝난 판별은 토큰을 되살리지 않는다', () async {
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final refreshGate = Completer<TokenResponse>();
+      final repository = FakeAuthRepository(profile: _profileWithClub)
+        ..refreshGate = refreshGate;
+      final container = _container(repository: repository, store: store);
+
+      // build()를 시작만 시킨다 — refresh()가 게이트에 걸려 끝나지 않는다.
+      container.read(sessionControllerProvider);
+      await Future<void>.delayed(Duration.zero);
+      expect(repository.refreshCalls, 1, reason: '판별이 refresh() 호출까지는 진행돼 있어야 한다');
+      expect(container.read(sessionControllerProvider).isLoading, isTrue);
+
+      // 판별이 진행 중인 상태에서 로그아웃한다.
+      await container.read(sessionControllerProvider.notifier).signOut();
+
+      expect(container.read(sessionControllerProvider).value, isA<SessionSignedOut>());
+      expect(await store.readRefreshToken(), isNull);
+      expect(await store.readAccessToken(), isNull);
+
+      // 이제 막혀 있던 refresh()를 풀어 낡은 판별이 뒤늦게 끝나게 한다.
+      refreshGate.complete(const TokenResponse(accessToken: 'stale-a', refreshToken: 'stale-r'));
+      // 낡은 _resolve()가 이어서(원래대로라면 save→fetchMe→_settle까지) 완전히
+      // 흘러갈 시간을 준다.
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      // 낡은 판별이 토큰을 되살리지 않았어야 한다.
+      expect(await store.readRefreshToken(), isNull);
+      expect(await store.readAccessToken(), isNull);
+      // 낡은 판별이 SessionReady를 다시 발행하지 않았어야 한다.
+      expect(container.read(sessionControllerProvider).value, isA<SessionSignedOut>());
+    });
+
+    test('연속 로그인 — 먼저 시작했지만 늦게 끝나는 저장이 나중 로그인의 토큰을 덮어쓰지 않는다', () async {
+      final store = InMemoryTokenStore();
+      final firstSaveGate = Completer<void>();
+      final gatedStore = FirstSaveGatedTokenStore(store, firstSaveGate.future);
+      final repository = FakeAuthRepository(profile: _profileWithClub);
+      final container = _container(repository: repository, store: gatedStore);
+      await container.read(sessionControllerProvider.future); // 초기 SignedOut 판별
+
+      final notifier = container.read(sessionControllerProvider.notifier);
+
+      // 첫 번째 로그인 — save()가 게이트에 걸려 끝나지 않는다.
+      final first = notifier.onAuthenticated(
+        const TokenResponse(accessToken: 'first-a', refreshToken: 'first-r'),
+      );
+      await Future<void>.delayed(Duration.zero); // 첫 save() 호출이 시작되도록 양보
+
+      // 두 번째 로그인 — 첫 번째가 아직 끝나지 않은 상태에서 겹쳐 들어온다.
+      final second = notifier.onAuthenticated(
+        const TokenResponse(accessToken: 'second-a', refreshToken: 'second-r'),
+      );
+
+      // 첫 번째 저장을 풀어준다. 큐가 없다면(수정 전) 첫 번째 save()가
+      // 두 번째 것보다 늦게 저장소에 닿아 second의 토큰을 덮어쓸 수 있다.
+      firstSaveGate.complete();
+
+      await first;
+      await second;
+
+      expect(await store.readAccessToken(), 'second-a');
+      expect(await store.readRefreshToken(), 'second-r');
+      expect(container.read(sessionControllerProvider).value, isA<SessionReady>());
+    });
   });
 }
