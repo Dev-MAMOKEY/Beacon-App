@@ -6,6 +6,8 @@ enum ErrorCode {
   tokenMissing('TOKEN_MISSING'),
   tokenExpired('TOKEN_EXPIRED'),
   tokenInvalid('TOKEN_INVALID'),
+  refreshTokenExpired('REFRESH_TOKEN_EXPIRED'),
+  refreshTokenInvalid('REFRESH_TOKEN_INVALID'),
   refreshTokenRevoked('REFRESH_TOKEN_REVOKED'),
 
   // 권한
@@ -17,6 +19,7 @@ enum ErrorCode {
   invalidInviteCode('INVALID_INVITE_CODE'),
   alreadyClubMember('ALREADY_CLUB_MEMBER'),
   clubNotFound('CLUB_NOT_FOUND'),
+  memberNotFound('MEMBER_NOT_FOUND'),
 
   // 세션
   sessionAlreadyActive('SESSION_ALREADY_ACTIVE'),

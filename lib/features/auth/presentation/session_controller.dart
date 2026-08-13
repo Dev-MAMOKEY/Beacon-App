@@ -41,11 +41,24 @@ class SessionUnavailable extends SessionState {
 /// refresh 응답 코드 중 "자격 증명 자체가 죽었다"는 뜻인 것만 SignedOut으로
 /// 취급한다. 그 외(네트워크 단절, 5xx, 파싱 실패 등)는 토큰을 지울 근거가
 /// 없다 — 다시 시도하면 될 수도 있는 일시적 실패다.
+///
+/// Swagger 기준 `/auth/refresh` 가 401로 내려주는 코드는 정확히
+/// REFRESH_TOKEN_EXPIRED / REFRESH_TOKEN_INVALID / REFRESH_TOKEN_REVOKED
+/// 셋뿐이고(그 문서엔 "재로그인 화면으로 보내야 합니다"라고 명시돼 있다),
+/// 404 MEMBER_NOT_FOUND(토큰의 회원이 더 이상 없음)도 재발급으로 복구할
+/// 수 없기는 마찬가지다. TOKEN_EXPIRED/TOKEN_INVALID/TOKEN_MISSING은
+/// refresh가 아니라 보호된 엔드포인트(`fetchMe` 등)가 액세스 토큰에 대해
+/// 돌려주는 코드로, AuthInterceptor의 재발급이 같은 refresh token으로 다시
+/// 실패했을 때 이 값들이 그대로 올라온다 — 그 경우도 자격 증명이 죽은
+/// 것이므로 함께 취급한다.
 const Set<ErrorCode> _authFailureCodes = {
   ErrorCode.tokenExpired,
   ErrorCode.tokenInvalid,
   ErrorCode.tokenMissing,
+  ErrorCode.refreshTokenExpired,
+  ErrorCode.refreshTokenInvalid,
   ErrorCode.refreshTokenRevoked,
+  ErrorCode.memberNotFound,
   ErrorCode.invalidCredentials,
 };
 
