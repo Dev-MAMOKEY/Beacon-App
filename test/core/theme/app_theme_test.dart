@@ -61,4 +61,31 @@ void main() {
     expect(copy.body3, original.body3);
     expect(copy.number1, original.number1);
   });
+
+  testWidgets('Theme.of(context).extension()으로 위젯 트리에서 토큰에 접근할 수 있다', (
+    WidgetTester tester,
+  ) async {
+    AppColors? colorsFromContext;
+    AppTypography? typographyFromContext;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: Builder(
+          builder: (context) {
+            colorsFromContext = Theme.of(context).extension<AppColors>();
+            typographyFromContext =
+                Theme.of(context).extension<AppTypography>();
+            return const SizedBox.shrink();
+          },
+        ),
+      ),
+    );
+
+    expect(colorsFromContext, isNotNull);
+    expect(colorsFromContext!.main, AppColors.light.main);
+
+    expect(typographyFromContext, isNotNull);
+    expect(typographyFromContext!.title4.fontFamily, 'Pretendard');
+  });
 }
