@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -40,6 +42,10 @@ class InviteCodeScreen extends ConsumerStatefulWidget {
   const InviteCodeScreen({super.key});
 
   static const int codeLength = 6;
+
+  /// 스크롤 뷰의 위아래 패딩. 최소 높이를 계산할 때 그만큼 빼야 화면이 꼭
+  /// 맞는 경우에도 불필요한 스크롤이 생기지 않는다.
+  static const double _verticalPadding = 32;
 
   @override
   ConsumerState<InviteCodeScreen> createState() => _InviteCodeScreenState();
@@ -128,42 +134,64 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
 
     return Scaffold(
       backgroundColor: colors.bg,
+      // 고정 Column + Spacer만 쓰면 키보드가 올라온 작은 화면에서 세로
+      // 공간이 모자라 오버플로가 난다(다른 화면들은 전부 스크롤 뷰를 쓴다).
+      // 스크롤 가능하게 감싸되, 화면이 충분히 클 때는 지금처럼 확인 버튼이
+      // 바닥에 붙어 있도록 최소 높이를 가용 높이로 잡아준다 — 그래야 Spacer가
+      // 남은 공간을 그대로 먹는다. IntrinsicHeight는 스크롤 뷰의 무한 높이
+      // 제약 안에서도 Spacer(Expanded)가 동작하게 하기 위해 필요하다.
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 80),
-              Text(
-                '관리자에게 받은\n초대코드를 입력해주세요',
-                style: typography.title3.copyWith(color: colors.gray3),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 24,
+              vertical: InviteCodeScreen._verticalPadding,
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: math.max(
+                  0,
+                  constraints.maxHeight - InviteCodeScreen._verticalPadding * 2,
+                ),
               ),
-              const SizedBox(height: 40),
-              AppInput(
-                controller: _code,
-                hint: '초대코드 6자리',
-                errorText: _error,
-                maxLength: InviteCodeScreen.codeLength,
-                textCapitalization: TextCapitalization.characters,
-                // 순서가 중요하다: 먼저 영문/숫자만 남기고(그래야 이모지·공백처럼
-                // UTF-16 길이와 사용자 체감 글자 수가 어긋나는 입력이 애초에
-                // 들어오지 못한다 — 6자리 판정은 String.length를 쓴다), 그다음
-                // 대문자로 바꾼다. FilteringTextInputFormatter는 SDK 제공
-                // 구현이라 걸러낸 만큼 선택 영역을 알아서 맞춰준다.
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp('[A-Za-z0-9]')),
-                  const _UpperCaseTextFormatter(),
-                ],
-                onChanged: _onCodeChanged,
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 80),
+                    Text(
+                      '관리자에게 받은\n초대코드를 입력해주세요',
+                      style: typography.title3.copyWith(color: colors.gray3),
+                    ),
+                    const SizedBox(height: 40),
+                    AppInput(
+                      controller: _code,
+                      hint: '초대코드 6자리',
+                      errorText: _error,
+                      maxLength: InviteCodeScreen.codeLength,
+                      textCapitalization: TextCapitalization.characters,
+                      // 순서가 중요하다: 먼저 영문/숫자만 남기고(그래야
+                      // 이모지·공백처럼 UTF-16 길이와 사용자 체감 글자 수가
+                      // 어긋나는 입력이 애초에 들어오지 못한다 — 6자리 판정은
+                      // String.length를 쓴다), 그다음 대문자로 바꾼다.
+                      // FilteringTextInputFormatter는 SDK 제공 구현이라
+                      // 걸러낸 만큼 선택 영역을 알아서 맞춰준다.
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp('[A-Za-z0-9]')),
+                        const _UpperCaseTextFormatter(),
+                      ],
+                      onChanged: _onCodeChanged,
+                    ),
+                    const Spacer(),
+                    AppButton(
+                      label: '확인',
+                      isLoading: _isSubmitting,
+                      onPressed: _canSubmit ? _submit : null,
+                    ),
+                  ],
+                ),
               ),
-              const Spacer(),
-              AppButton(
-                label: '확인',
-                isLoading: _isSubmitting,
-                onPressed: _canSubmit ? _submit : null,
-              ),
-            ],
+            ),
           ),
         ),
       ),

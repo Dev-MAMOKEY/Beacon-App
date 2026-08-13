@@ -143,6 +143,24 @@ Widget _host(ClubRepository repository) {
 }
 
 void main() {
+  // 예전에는 고정 Column + Spacer라 작은 화면에서 키보드가 올라오면
+  // RenderFlex 오버플로가 났다. flutter_test는 오버플로를 예외로 보고하므로,
+  // 좁은 뷰포트에 세우는 것만으로 회귀를 잡을 수 있다.
+  testWidgets('키보드가 올라온 작은 화면에서도 오버플로 없이 스크롤된다', (tester) async {
+    tester.view.physicalSize = const Size(320, 480);
+    tester.view.devicePixelRatio = 1.0;
+    // 키보드가 차지하는 높이를 흉내낸다 — SafeArea가 이만큼을 덜어낸다.
+    tester.view.viewInsets = FakeViewPadding(bottom: 260);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_host(_FakeClubRepository()));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(SingleChildScrollView), findsOneWidget);
+    expect(find.text('확인'), findsOneWidget);
+  });
+
   testWidgets('6자리 미만이면 확인 버튼이 비활성이다', (tester) async {
     await tester.pumpWidget(_host(_FakeClubRepository()));
     await tester.pump();

@@ -2,6 +2,7 @@ import 'package:beacon_app/core/network/api_client.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http_mock_adapter/http_mock_adapter.dart';
 
@@ -189,6 +190,55 @@ void main() {
         isA<ApiException>()
             .having((e) => e.code, 'code', ErrorCode.unknown)
             .having((e) => e.statusCode, 'statusCode', 502),
+      ),
+    );
+  });
+
+  // AuthInterceptor는 onRequest에서 토큰 저장소를 읽는다. 기기의 키체인/
+  // 키스토어 접근이 깨지면 그 PlatformException이 응답 없는 DioException으로
+  // 감싸여 여기까지 오는데, 예전에는 그것도 전부 "서버에 연결하지
+  // 못했습니다"로 나갔다 — 네트워크는 멀쩡한데 사용자는 와이파이를 껐다
+  // 켜게 된다.
+  test('저장소 PlatformException은 네트워크 실패와 구분해서 안내한다', () async {
+    final localDio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+    localDio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          throw PlatformException(code: 'Keychain', message: 'read failed');
+        },
+      ),
+    );
+
+    expect(
+      () => ApiClient(localDio).get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.unknown)
+            .having((e) => e.message, 'message', '기기에 저장된 로그인 정보를 읽지 못했습니다.'),
+      ),
+    );
+  });
+
+  test('연결 자체가 실패하면 network 코드로 올라온다', () async {
+    final localDio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+    localDio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          throw DioException(
+            requestOptions: options,
+            type: DioExceptionType.connectionError,
+            error: 'Connection failed',
+          );
+        },
+      ),
+    );
+
+    expect(
+      () => ApiClient(localDio).get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.network)
+            .having((e) => e.message, 'message', '서버에 연결하지 못했습니다.'),
       ),
     );
   });

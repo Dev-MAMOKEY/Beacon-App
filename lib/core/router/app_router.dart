@@ -117,8 +117,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.invite,
         builder: (context, state) => const InviteCodeScreen(),
       ),
-      // redirect가 이 경로를 가리키므로 라우트 자체는 지금 등록해야 한다.
-      // 등록하지 않으면 go_router가 redirect 시점에 예외를 던진다.
+      // redirect가 이 경로를 가리키므로 라우트 자체를 지금 등록해야 한다.
+      // 등록하지 않아도 go_router가 예외를 던지지는 않는다 — redirect는
+      // 그대로 "/home"을 가리키고, 거기 매칭되는 라우트가 없으니 그 화면이
+      // 그냥 렌더링되지 않는다(app_router_widget_test에서 실제로 GoRoute를
+      // 지워 확인했다: 찾은 위젯 수 0). 조용히 실패하기 때문에 오히려 라우트
+      // 등록을 테스트로 고정해 둘 필요가 있다.
       // 내용은 #11에서 실제 홈 화면으로 교체한다.
       GoRoute(
         path: AppRoutes.home,
