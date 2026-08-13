@@ -1,4 +1,4 @@
-package com.example.beacon_app
+package com.mamokey.beacon
 
 import io.flutter.embedding.android.FlutterActivity
 

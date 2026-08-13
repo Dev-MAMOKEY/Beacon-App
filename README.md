@@ -1,17 +1,24 @@
 # beacon_app
 
-A new Flutter project.
+ESP32 BLE 비콘 기반 동아리 출석 체크 Flutter 앱 (Android / iOS).
 
-## Getting Started
+## 실행
 
-This project is a starting point for a Flutter application.
+```bash
+cp .env.example .env   # API_BASE_URL 확인
+flutter pub get
+flutter run
+```
 
-A few resources to get you started if this is your first Flutter project:
+## 구조
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+| 경로 | 역할 |
+|---|---|
+| `lib/core/` | 설정, 네트워크, 저장소, 라우터, 테마 |
+| `lib/components/ui/` | 코드베이스가 소유하는 UI 프리미티브 |
+| `lib/features/` | 기능 단위 (data / presentation) |
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 연관 리포
+
+- 펌웨어: [beacon_esp32](https://github.com/Dev-MAMOKEY/beacon_esp32)
+- 웹 대시보드: [beacon_frontend](https://github.com/Dev-MAMOKEY/beacon_frontend)
