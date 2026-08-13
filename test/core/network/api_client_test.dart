@@ -1,0 +1,112 @@
+import 'package:beacon_app/core/network/api_client.dart';
+import 'package:beacon_app/core/network/api_exception.dart';
+import 'package:beacon_app/core/network/error_code.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http_mock_adapter/http_mock_adapter.dart';
+
+void main() {
+  late Dio dio;
+  late DioAdapter adapter;
+  late ApiClient client;
+
+  setUp(() {
+    dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+    adapter = DioAdapter(dio: dio);
+    client = ApiClient(dio);
+  });
+
+  test('success 응답에서 data만 꺼내 파싱한다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': true,
+        'data': {'name': '김민준'},
+        'error': null,
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    final name = await client.get<String>(
+      '/ping',
+      parse: (json) => (json! as Map<String, dynamic>)['name'] as String,
+    );
+
+    expect(name, '김민준');
+  });
+
+  test('success:false 응답을 ApiException으로 변환한다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': false,
+        'data': null,
+        'error': {
+          'code': 'INVALID_CREDENTIALS',
+          'message': '학번 또는 비밀번호가 올바르지 않습니다.',
+        },
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.invalidCredentials)
+            .having((e) => e.message, 'message', '학번 또는 비밀번호가 올바르지 않습니다.'),
+      ),
+    );
+  });
+
+  test('모르는 에러 코드는 unknown으로 흡수한다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': false,
+        'data': null,
+        'error': {'code': 'SOMETHING_NEW', 'message': '무언가 잘못됐습니다.'},
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', ErrorCode.unknown)),
+    );
+  });
+
+  test('HTTP 4xx 본문이 래퍼 형식이면 그 에러 코드를 쓴다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(404, {
+        'success': false,
+        'data': null,
+        'error': {'code': 'SESSION_NOT_FOUND', 'message': '세션이 존재하지 않습니다.'},
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.sessionNotFound)
+            .having((e) => e.statusCode, 'statusCode', 404),
+      ),
+    );
+  });
+
+  test('연결 실패는 network 코드로 변환한다', () async {
+    adapter.onGet('/ping', (server) {
+      server.throws(
+        0,
+        DioException.connectionError(
+          requestOptions: RequestOptions(path: '/ping'),
+          reason: 'no route',
+        ),
+      );
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', ErrorCode.network)),
+    );
+  });
+}
