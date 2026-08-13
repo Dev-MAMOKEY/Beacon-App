@@ -1,8 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- debug/profile 오버레이에도 같은 권한이 있지만 그건 개발 도구용이다.
+         릴리스 빌드에는 그 오버레이가 병합되지 않으므로, 여기 없으면 릴리스
+         APK가 네트워크에 전혀 닿지 못한다. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="beacon_app"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

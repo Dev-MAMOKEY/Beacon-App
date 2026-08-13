@@ -332,6 +332,75 @@ void main() {
         expect(await store.readRefreshToken(), isNull);
       });
     }
+
+    // 실 백엔드는 MEMBER_NOT_FOUND를 404로 내려준다. 컨트롤러와 인터셉터가
+    // 같은 판정(isAuthFailure)을 쓰는지 양쪽에서 각각 고정한다 — 인터셉터
+    // 쪽 짝은 auth_interceptor_test의 '재발급이 404 MEMBER_NOT_FOUND로
+    // 실패하면...' 이다.
+    test('리프레시가 404 MEMBER_NOT_FOUND로 실패해도 SignedOut이 되고 토큰이 지워진다', () async {
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(
+          refreshError: const ApiException(
+            ErrorCode.memberNotFound,
+            '해당 회원이 존재하지 않습니다.',
+            statusCode: 404,
+          ),
+        ),
+        store: store,
+      );
+
+      final state = await container.read(sessionControllerProvider.future);
+
+      expect(state, isA<SessionSignedOut>());
+      expect(await store.readAccessToken(), isNull);
+      expect(await store.readRefreshToken(), isNull);
+    });
+
+    test('code를 읽지 못한 401 응답은 상태 코드만으로 SignedOut이 된다', () async {
+      // ApiClient는 래퍼가 아닌 바디(프록시 HTML 등)를 ErrorCode.unknown +
+      // statusCode로 감싸 올려보낸다. 코드를 읽을 수 없을 때 401 자체는
+      // "자격 증명이 거부됐다"는 충분한 증거이고, 인터셉터도 같은 판정을
+      // 한다 — 여기서 SessionUnavailable로 두면 두 곳이 어긋난다.
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(
+          refreshError: const ApiException(
+            ErrorCode.unknown,
+            '서버 응답을 처리하지 못했습니다.',
+            statusCode: 401,
+          ),
+        ),
+        store: store,
+      );
+
+      final state = await container.read(sessionControllerProvider.future);
+
+      expect(state, isA<SessionSignedOut>());
+      expect(await store.readRefreshToken(), isNull);
+    });
+
+    test('code를 읽지 못한 500 응답은 SessionUnavailable로 남고 토큰을 지우지 않는다', () async {
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(
+          refreshError: const ApiException(
+            ErrorCode.unknown,
+            '서버 응답을 처리하지 못했습니다.',
+            statusCode: 500,
+          ),
+        ),
+        store: store,
+      );
+
+      final state = await container.read(sessionControllerProvider.future);
+
+      expect(state, isA<SessionUnavailable>());
+      expect(await store.readRefreshToken(), 'r');
+    });
   });
 
   group('onAuthenticated', () {

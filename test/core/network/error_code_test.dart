@@ -61,4 +61,43 @@ void main() {
       }
     });
   });
+
+  // SessionController와 AuthInterceptor가 **같은** 이 함수를 부른다. 예전에는
+  // 집합만 공유하고 판정은 각자 했는데, 인터셉터 쪽이 401/403이 아닌 응답을
+  // code를 보기도 전에 걸러내는 바람에 404 MEMBER_NOT_FOUND가 조용히
+  // 일시적 실패로 새어나갔다.
+  group('isAuthFailure — 상태 코드보다 error.code가 정본이다', () {
+    test('인식된 인증 실패 코드는 상태 코드가 404여도 인증 실패다', () {
+      expect(
+        isAuthFailure(code: ErrorCode.memberNotFound, statusCode: 404),
+        isTrue,
+      );
+    });
+
+    test('인식된 인증 실패 코드는 상태 코드가 없어도 인증 실패다', () {
+      expect(
+        isAuthFailure(code: ErrorCode.refreshTokenRevoked, statusCode: null),
+        isTrue,
+      );
+    });
+
+    test('인증 실패 집합 밖의 인식된 코드는 401이어도 인증 실패가 아니다', () {
+      // 권한 부족(FORBIDDEN)은 자격 증명이 죽었다는 뜻이 아니다 — 여기서
+      // 로그아웃시키면 멀쩡한 세션을 날린다.
+      expect(isAuthFailure(code: ErrorCode.forbidden, statusCode: 403), isFalse);
+      expect(isAuthFailure(code: ErrorCode.notClubMember, statusCode: 401), isFalse);
+    });
+
+    test('code를 읽지 못한 경우에만 401/403을 근거로 삼는다', () {
+      expect(isAuthFailure(code: ErrorCode.unknown, statusCode: 401), isTrue);
+      expect(isAuthFailure(code: ErrorCode.unknown, statusCode: 403), isTrue);
+      expect(isAuthFailure(code: ErrorCode.unknown, statusCode: 500), isFalse);
+      expect(isAuthFailure(code: ErrorCode.unknown, statusCode: null), isFalse);
+    });
+
+    test('네트워크 실패는 어떤 상태 코드에서도 인증 실패가 아니다', () {
+      expect(isAuthFailure(code: ErrorCode.network, statusCode: null), isFalse);
+      expect(isAuthFailure(code: ErrorCode.network, statusCode: 401), isFalse);
+    });
+  });
 }

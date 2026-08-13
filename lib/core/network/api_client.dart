@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/services.dart' show PlatformException;
 
 import 'api_exception.dart';
 import 'error_code.dart';
@@ -72,7 +73,19 @@ class ApiClient {
           statusCode: failed.statusCode,
         );
       }
-      // 응답 자체가 없다 — 연결 실패나 타임아웃.
+      // 응답 자체가 없다. 대부분은 연결 실패나 타임아웃이지만 전부는
+      // 아니다 — AuthInterceptor가 onRequest에서 토큰 저장소(키체인/
+      // 키스토어)를 읽다 PlatformException을 던지면, 그 예외도 Dio가
+      // 응답 없는 DioException으로 감싸 여기까지 올려보낸다. 그걸
+      // "서버에 연결하지 못했습니다"로 안내하면 사용자는 있지도 않은
+      // 네트워크 문제를 고치려 든다. 래퍼 계약(호출자는 ApiException만
+      // 본다)은 그대로 두고 코드와 문구만 구분한다.
+      if (error.error is PlatformException) {
+        throw ApiException(
+          ErrorCode.unknown,
+          '기기에 저장된 로그인 정보를 읽지 못했습니다.',
+        );
+      }
       throw ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.');
     }
     return _unwrap(response.data, parse, response.statusCode);

@@ -26,6 +26,23 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- 백엔드가 아직 평문 HTTP(http://43.203.209.87:8081)로만 서비스된다.
+	     ATS는 기본적으로 평문 요청을 차단하므로 이 호스트 하나만 예외로 둔다 —
+	     NSAllowsArbitraryLoads로 전역을 여는 것은 앱이 앞으로 붙을 모든
+	     호스트까지 평문을 허용하므로 필요 이상으로 큰 구멍이다. 서버가
+	     HTTPS로 전환되면 이 예외와 Android의 network_security_config.xml을
+	     함께 지운다. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>43.203.209.87</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

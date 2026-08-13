@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:beacon_app/core/network/auth_interceptor.dart';
 import 'package:beacon_app/core/storage/token_store.dart';
+import 'package:beacon_app/core/storage/token_write_coordinator.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -182,6 +183,7 @@ class _RaceableTokenStore implements TokenStore {
 
 void main() {
   late InMemoryTokenStore store;
+  late TokenWriteCoordinator coordinator;
   late Dio dio;
   late _ScriptedAdapter adapter;
   late int expiredCallbackCount;
@@ -190,6 +192,12 @@ void main() {
     store = InMemoryTokenStore();
     await store.save(accessToken: 'old-access', refreshToken: 'refresh-1');
 
+    // 인터셉터는 저장소가 아니라 조정자를 통해서만 토큰을 읽고 쓴다.
+    // SessionController도 같은 인스턴스를 공유하므로, 여기서 조정자에 직접
+    // beginOperation()/save()/clear()를 부르는 것은 "세션 컨트롤러가 그
+    // 순간 로그인/로그아웃을 했다"를 재현하는 것과 같다.
+    coordinator = TokenWriteCoordinator(store);
+
     dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
     adapter = _ScriptedAdapter();
     dio.httpClientAdapter = adapter;
@@ -197,7 +205,7 @@ void main() {
     expiredCallbackCount = 0;
     dio.interceptors.add(
       AuthInterceptor(
-        store: store,
+        tokens: coordinator,
         dio: dio,
         onSessionExpired: () => expiredCallbackCount++,
       ),
@@ -333,6 +341,196 @@ void main() {
       expect(await store.readAccessToken(), isNull);
       expect(await store.readRefreshToken(), isNull);
       expect(expiredCallbackCount, 1);
+    });
+
+    // 리뷰에서 드러난 정책 어긋남: 인터셉터는 401/403이 아닌 응답을 code를
+    // 보기도 전에 일시적 실패로 넘겼는데, 실 백엔드는 MEMBER_NOT_FOUND를
+    // **404**로 내려준다(session_controller_test의 같은 코드 목록 참고).
+    // 그래서 "리프레시 토큰은 유효한데 서버에서 회원 행이 삭제된" 상황에서
+    // 인터셉터가 토큰을 남기고 만료 콜백도 부르지 않아, 사용자가 모든
+    // 요청이 실패하는 화면에서 로그인으로 돌아갈 길 없이 갇혔다.
+    test('재발급이 404 MEMBER_NOT_FOUND로 실패하면 토큰을 지우고 만료 콜백을 부른다', () async {
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 404,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'MEMBER_NOT_FOUND', 'message': '해당 회원이 존재하지 않습니다.'},
+        },
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      await expectLater(dio.get<Object?>('/me'), throwsA(isA<DioException>()));
+
+      expect(await store.readAccessToken(), isNull, reason: '인식된 인증 실패 코드는 상태 코드로 뒤집히지 않는다');
+      expect(await store.readRefreshToken(), isNull);
+      expect(expiredCallbackCount, 1);
+    });
+
+    test('재발급이 401을 냈고 바디가 표준 래퍼가 아니면 상태 코드만으로 자격 증명 실패로 본다', () async {
+      // 프록시가 끼어들어 HTML을 돌려주는 경우처럼 code를 읽을 수 없는 응답.
+      // 이때는 401 자체가 "자격 증명이 거부됐다"는 충분한 증거다.
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 401,
+        body: (_) => '<html><body>401 Unauthorized</body></html>',
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      await expectLater(dio.get<Object?>('/me'), throwsA(isA<DioException>()));
+
+      expect(await store.readAccessToken(), isNull);
+      expect(expiredCallbackCount, 1);
+    });
+
+    test('재발급이 5xx로 실패하면 바디를 읽을 수 없어도 세션을 지우지 않는다', () async {
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 500,
+        body: (_) => '<html><body>502 Bad Gateway</body></html>',
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      await expectLater(dio.get<Object?>('/me'), throwsA(isA<DioException>()));
+
+      expect(await store.readAccessToken(), 'old-access', reason: '서버 오류는 자격 증명을 무효라고 볼 근거가 아니다');
+      expect(expiredCallbackCount, 0);
+    });
+  });
+
+  /// 인터셉터가 [TokenWriteCoordinator]가 아니라 [TokenStore]에 직접 쓰던
+  /// 시절에는 아래 두 상황에서 인터셉터가 세션 컨트롤러의 결정을 조용히
+  /// 뒤집었다. 세대 가드는 도움이 되지 못했다 — 인터셉터가 세대도 큐도 갖고
+  /// 있지 않았기 때문이다.
+  group('세션 컨트롤러와 겹치는 토큰 쓰기 — 조정자가 없으면 인터셉터가 결정을 뒤집는다', () {
+    test('재발급이 진행 중일 때 로그아웃하면, 회전된 토큰이 뒤늦게 저장되지 않는다', () async {
+      final refreshGate = Completer<void>();
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 200,
+        holdUntil: refreshGate.future,
+        body: (_) => {
+          'success': true,
+          'data': {'accessToken': 'rotated-access', 'refreshToken': 'rotated-refresh'},
+        },
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      final refreshArrived = adapter.waitForCalls('POST', '/auth/refresh', 1);
+      final pending = dio.get<Object?>('/me');
+      await refreshArrived; // 재발급 flight가 네트워크에 걸려 있는 상태
+
+      // 이 사이에 사용자가 로그아웃한다 — SessionController.signOut()이 하는
+      // 일과 같다(세대를 올리고 큐를 통해 지운다).
+      final signOutGeneration = coordinator.beginOperation();
+      expect(await coordinator.clear(signOutGeneration), isTrue);
+
+      refreshGate.complete();
+      await expectLater(pending, throwsA(isA<DioException>()));
+
+      expect(
+        await store.readAccessToken(),
+        isNull,
+        reason: '로그아웃 뒤에 재발급이 회전된 토큰을 되살리면, 화면은 로그아웃인데 자격 증명은 디스크에 남는다',
+      );
+      expect(await store.readRefreshToken(), isNull);
+    });
+
+    test('옛 재발급이 실패하는 사이 새로 로그인하면, 새 사용자의 토큰을 지우거나 만료시키지 않는다', () async {
+      final refreshGate = Completer<void>();
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 401,
+        holdUntil: refreshGate.future,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'REFRESH_TOKEN_REVOKED', 'message': '무효화됨'},
+        },
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      final refreshArrived = adapter.waitForCalls('POST', '/auth/refresh', 1);
+      final pending = dio.get<Object?>('/me');
+      await refreshArrived;
+
+      // 옛 flight가 실패로 향하는 사이 사용자가 다른 계정으로 새로 로그인한다
+      // — SessionController.onAuthenticated()가 하는 일과 같다.
+      final loginGeneration = coordinator.beginOperation();
+      expect(
+        await coordinator.save(
+          loginGeneration,
+          accessToken: 'new-user-access',
+          refreshToken: 'new-user-refresh',
+        ),
+        isTrue,
+      );
+
+      refreshGate.complete();
+      await expectLater(pending, throwsA(isA<DioException>()));
+
+      expect(
+        await store.readAccessToken(),
+        'new-user-access',
+        reason: '옛 flight의 정리가 방금 로그인한 사용자의 토큰을 지우면 안 된다',
+      );
+      expect(await store.readRefreshToken(), 'new-user-refresh');
+      expect(
+        expiredCallbackCount,
+        0,
+        reason: '만료 콜백까지 부르면 방금 로그인한 사용자가 곧바로 로그인 화면으로 밀려난다',
+      );
     });
   });
 
@@ -512,7 +710,7 @@ void main() {
       var localExpired = 0;
       localDio.interceptors.add(
         AuthInterceptor(
-          store: raceStore,
+          tokens: TokenWriteCoordinator(raceStore),
           dio: localDio,
           onSessionExpired: () => localExpired++,
         ),

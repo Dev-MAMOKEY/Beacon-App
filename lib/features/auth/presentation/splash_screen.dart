@@ -9,7 +9,7 @@ import 'session_controller.dart';
 class SplashScreen extends ConsumerWidget {
   const SplashScreen({super.key});
 
-  final String serviceName = '마모키';
+  static const String serviceName = '마모키';
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
