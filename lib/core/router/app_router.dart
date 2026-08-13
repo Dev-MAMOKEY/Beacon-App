@@ -8,6 +8,7 @@ import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_controller.dart';
 import '../../features/auth/presentation/signup_screen.dart';
 import '../../features/auth/presentation/splash_screen.dart';
+import '../../features/club/presentation/invite_code_screen.dart';
 import '../theme/app_colors.dart';
 
 abstract final class AppRoutes {
@@ -112,6 +113,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.signup,
         builder: (context, state) => const SignupScreen(),
       ),
+      GoRoute(
+        path: AppRoutes.invite,
+        builder: (context, state) => const InviteCodeScreen(),
+      ),
       // redirect가 이 경로를 가리키므로 라우트 자체는 지금 등록해야 한다.
       // 등록하지 않으면 go_router가 redirect 시점에 예외를 던진다.
       // 내용은 #11에서 실제 홈 화면으로 교체한다.
@@ -119,7 +124,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.home,
         builder: (context, state) => const _HomePlaceholder(),
       ),
-      // 초대코드 화면은 #9에서 등록한다.
     ],
     redirect: (context, state) {
       return computeRedirect(
