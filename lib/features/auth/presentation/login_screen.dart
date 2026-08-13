@@ -32,13 +32,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
-  // 로그인은 회원가입과 달리 필드별 형식 검증을 하지 않는다 — 학번/비밀번호의
-  // 옳고 그름은 서버만 판정하고 화면은 화면 단위 메시지로만 보여준다(명세서
-  // 보안 권장 방식). 그래서 버튼도 "완전히 빈 폼"만 막는다: 두 필드 모두
-  // 채워야 활성화되도록 AND로 좁히면, 두 번째 필드에 입력하는 동안에는
-  // setState가 아직 반영되지 않아 버튼이 눌리지 않는 짧은 순간이 늘 생긴다.
+  // 명세서: 로그인 버튼을 탭하면 두 필드 모두 값이 있는지 확인 후 API를
+  // 호출한다. 한쪽만 채워진 채로 호출하면 서버가 INVALID_CREDENTIALS로
+  // 응답하고, 화면은 그걸 그대로 보여준다 — 실제로는 "폼이 미완성"인데
+  // "자격 증명이 틀렸다"는 오해를 주게 되므로 두 필드를 모두 요구한다.
   bool get _canSubmit =>
-      (_stdId.text.isNotEmpty || _password.text.isNotEmpty) && !_isSubmitting;
+      _stdId.text.isNotEmpty && _password.text.isNotEmpty && !_isSubmitting;
 
   Future<void> _submit() async {
     setState(() {

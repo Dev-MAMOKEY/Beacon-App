@@ -57,7 +57,9 @@ void main() {
     await tester.pump();
 
     await tester.enterText(find.byType(TextField).at(0), '20250101');
+    await tester.pump();
     await tester.enterText(find.byType(TextField).at(1), 'abcd1234');
+    await tester.pump();
     await tester.tap(find.text('로그인'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
@@ -79,5 +81,35 @@ void main() {
 
     final button = tester.widget<AppButton>(find.byType(AppButton));
     expect(button.onPressed, isNull);
+  });
+
+  testWidgets('한쪽 필드만 채워지면 로그인 버튼이 비활성이다', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authRepositoryProvider.overrideWithValue(_LoginFailsRepository()),
+          tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        ],
+        child: MaterialApp(theme: buildAppTheme(), home: const LoginScreen()),
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextField).at(0), '20250101');
+    await tester.pump();
+    expect(
+      tester.widget<AppButton>(find.byType(AppButton)).onPressed,
+      isNull,
+      reason: '학번만 채워지고 비밀번호가 비어 있으면 여전히 비활성이어야 한다',
+    );
+
+    await tester.enterText(find.byType(TextField).at(0), '');
+    await tester.enterText(find.byType(TextField).at(1), 'abcd1234');
+    await tester.pump();
+    expect(
+      tester.widget<AppButton>(find.byType(AppButton)).onPressed,
+      isNull,
+      reason: '비밀번호만 채워지고 학번이 비어 있으면 여전히 비활성이어야 한다',
+    );
   });
 }
