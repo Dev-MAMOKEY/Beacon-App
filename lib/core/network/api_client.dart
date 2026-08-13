@@ -54,21 +54,28 @@ class ApiClient {
     Future<Response<Object?>> Function() run,
     T Function(Object? json) parse,
   ) async {
+    final Response<Object?> response;
     try {
-      final response = await run();
-      return _unwrap(response.data, parse, response.statusCode);
+      response = await run();
     } on DioException catch (error) {
-      final body = error.response?.data;
+      final failed = error.response;
+      final body = failed?.data;
       if (body is Map<String, dynamic>) {
-        // 4xx/5xx라도 본문이 래퍼 형식이면 서버 에러 코드를 살린다.
-        return _unwrap(body, parse, error.response?.statusCode);
+        // 4xx/5xx라도 본문이 표준 래퍼면 서버 에러 코드를 살린다.
+        return _unwrap(body, parse, failed?.statusCode);
       }
-      throw ApiException(
-        ErrorCode.network,
-        '서버에 연결하지 못했습니다.',
-        statusCode: error.response?.statusCode,
-      );
+      if (failed != null) {
+        // 서버가 응답은 했지만 래퍼 형식이 아니다 (프록시 HTML, 빈 본문 등).
+        throw ApiException(
+          ErrorCode.unknown,
+          '서버 응답을 처리하지 못했습니다.',
+          statusCode: failed.statusCode,
+        );
+      }
+      // 응답 자체가 없다 — 연결 실패나 타임아웃.
+      throw ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.');
     }
+    return _unwrap(response.data, parse, response.statusCode);
   }
 
   T _unwrap<T>(
@@ -86,15 +93,29 @@ class ApiClient {
 
     if (body['success'] != true) {
       final error = body['error'];
-      final code = error is Map ? error['code'] as String? : null;
-      final message = error is Map ? error['message'] as String? : null;
+      final code = error is Map ? error['code'] : null;
+      final message = error is Map ? error['message'] : null;
       throw ApiException(
-        ErrorCode.fromWire(code),
-        message ?? '알 수 없는 오류가 발생했습니다.',
+        // 서버가 code를 문자열이 아닌 값으로 보내도 unknown으로 흡수한다.
+        ErrorCode.fromWire(code is String ? code : null),
+        message is String && message.isNotEmpty
+            ? message
+            : '알 수 없는 오류가 발생했습니다.',
         statusCode: statusCode,
       );
     }
 
-    return parse(body['data']);
+    // parse가 무엇을 던지든 호출자에게는 ApiException만 나가야 한다.
+    try {
+      return parse(body['data']);
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw ApiException(
+        ErrorCode.unknown,
+        '응답 데이터를 해석하지 못했습니다.',
+        statusCode: statusCode,
+      );
+    }
   }
 }

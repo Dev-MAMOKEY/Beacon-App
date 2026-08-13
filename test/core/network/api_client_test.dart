@@ -109,4 +109,106 @@ void main() {
       throwsA(isA<ApiException>().having((e) => e.code, 'code', ErrorCode.network)),
     );
   });
+
+  test('error.code가 문자열이 아니면 unknown으로 흡수하고 message는 그대로 쓴다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': false,
+        'data': null,
+        'error': {'code': 123, 'message': 'bad'},
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.unknown)
+            .having((e) => e.message, 'message', 'bad'),
+      ),
+    );
+  });
+
+  test('error.message가 없거나 문자열이 아니면 기본 메시지를 쓴다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': false,
+        'data': null,
+        'error': {'code': 'INVALID_CREDENTIALS'},
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>().having(
+          (e) => e.message,
+          'message',
+          '알 수 없는 오류가 발생했습니다.',
+        ),
+      ),
+    );
+  });
+
+  test('success:true인데 data 키가 없으면 파서 실패를 ApiException으로 감싼다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, {
+        'success': true,
+        'error': null,
+        'timestamp': '2026-08-13T00:00:00Z',
+      });
+    });
+
+    expect(
+      () => client.get<String>(
+        '/ping',
+        parse: (json) => (json! as Map<String, dynamic>)['x'] as String,
+      ),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.unknown)
+            .having(
+              (e) => e.message,
+              'message',
+              '응답 데이터를 해석하지 못했습니다.',
+            ),
+      ),
+    );
+  });
+
+  test('502 응답이 래퍼가 아닌 HTML이면 unknown으로 흡수한다 (network 아님)', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(502, '<html>502 Bad Gateway</html>');
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.unknown)
+            .having((e) => e.statusCode, 'statusCode', 502),
+      ),
+    );
+  });
+
+  test('본문이 JSON 배열이면 unknown으로 흡수한다', () async {
+    adapter.onGet('/ping', (server) {
+      server.reply(200, [1, 2, 3]);
+    });
+
+    expect(
+      () => client.get<void>('/ping', parse: (_) {}),
+      throwsA(
+        isA<ApiException>()
+            .having((e) => e.code, 'code', ErrorCode.unknown)
+            .having(
+              (e) => e.message,
+              'message',
+              '응답 형식이 올바르지 않습니다.',
+            ),
+      ),
+    );
+  });
 }
