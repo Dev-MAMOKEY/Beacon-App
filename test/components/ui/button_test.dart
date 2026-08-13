@@ -2,6 +2,7 @@ import 'package:beacon_app/components/ui/button.dart';
 import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Widget _host(Widget child) {
@@ -64,5 +65,22 @@ void main() {
     await tester.tap(find.byType(AppButton));
     await tester.pump();
     expect(taps, 0);
+  });
+
+  testWidgets('포커스된 상태에서 Enter/Space를 누르면 onPressed가 호출된다', (tester) async {
+    var taps = 0;
+    await tester.pumpWidget(_host(AppButton(label: '확인', onPressed: () => taps++)));
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(taps, 1);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    expect(taps, 2);
   });
 }

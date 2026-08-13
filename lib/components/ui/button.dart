@@ -66,38 +66,55 @@ class AppButton extends StatelessWidget {
       button: true,
       enabled: _isEnabled,
       label: label,
-      child: GestureDetector(
-        onTap: _isEnabled ? onPressed : null,
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          key: const ValueKey('app_button_surface'),
-          duration: const Duration(milliseconds: 120),
-          height: style.height,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: style.background,
-            borderRadius: BorderRadius.circular(radius),
+      // 자식 Text가 라벨을 다시 읽지 않도록 이 노드의 속성만 남긴다. 대신
+      // GestureDetector가 잃는 tap 액션을 여기서 onTap으로 직접 되살린다.
+      excludeSemantics: true,
+      onTap: _isEnabled ? onPressed : null,
+      child: FocusableActionDetector(
+        enabled: _isEnabled,
+        mouseCursor: _isEnabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        actions: <Type, Action<Intent>>{
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (intent) {
+              onPressed?.call();
+              return null;
+            },
           ),
-          child: isLoading
-              ? SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(style.foreground),
+        },
+        child: GestureDetector(
+          onTap: _isEnabled ? onPressed : null,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            key: const ValueKey('app_button_surface'),
+            duration: const Duration(milliseconds: 120),
+            height: style.height,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: style.background,
+              borderRadius: BorderRadius.circular(radius),
+            ),
+            child: isLoading
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(style.foreground),
+                    ),
+                  )
+                : Text(
+                    label,
+                    style: style.textStyle.copyWith(color: style.foreground),
                   ),
-                )
-              : Text(
-                  label,
-                  style: style.textStyle.copyWith(color: style.foreground),
-                ),
+          ),
         ),
       ),
     );
   }
 }
 
-/// variant/size를 스타일로 해석한다. 위젯 본문에 색 분기를 두지 않기 위한 분리.
+/// variant/size를 스타일로 해석한다. exhaustive switch라 새 variant를 추가하면
+/// 컴파일 타임에 누락을 알려준다 — 위젯 본문에는 색 분기를 두지 않는다.
 AppButtonStyle resolveButtonStyle(
   BuildContext context,
   ButtonVariant variant,
@@ -107,16 +124,16 @@ AppButtonStyle resolveButtonStyle(
   final colors = Theme.of(context).extension<AppColors>()!;
   final typography = Theme.of(context).extension<AppTypography>()!;
 
-  final palette = <ButtonVariant, ({Color background, Color foreground})>{
-    ButtonVariant.primary: (background: colors.main, foreground: colors.white),
-    ButtonVariant.destructive: (background: colors.red, foreground: colors.white),
-    ButtonVariant.ghost: (background: Colors.transparent, foreground: colors.gray3),
-  }[variant]!;
+  final ({Color background, Color foreground}) palette = switch (variant) {
+    ButtonVariant.primary => (background: colors.main, foreground: colors.white),
+    ButtonVariant.destructive => (background: colors.red, foreground: colors.white),
+    ButtonVariant.ghost => (background: Colors.transparent, foreground: colors.gray3),
+  };
 
-  final metrics = <ButtonSize, ({double height, TextStyle textStyle})>{
-    ButtonSize.md: (height: 44, textStyle: typography.title7),
-    ButtonSize.lg: (height: 56, textStyle: typography.title6),
-  }[size]!;
+  final ({double height, TextStyle textStyle}) metrics = switch (size) {
+    ButtonSize.md => (height: 44.0, textStyle: typography.title7),
+    ButtonSize.lg => (height: 56.0, textStyle: typography.title6),
+  };
 
   return AppButtonStyle(
     background: enabled ? palette.background : colors.gray4,
