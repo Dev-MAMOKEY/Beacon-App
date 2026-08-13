@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/dio_provider.dart';
 import '../../../core/network/error_code.dart';
+import '../../../core/storage/token_write_coordinator.dart';
 import '../data/auth_dto.dart';
 import '../data/auth_repository.dart';
 
@@ -38,29 +39,31 @@ class SessionUnavailable extends SessionState {
   final String message;
 }
 
-// 자격-증명-죽음 판정은 core/network/error_code.dart의 authFailureCodes /
-// isAuthFailureCode가 정본이다. AuthInterceptor도 같은 판정을 쓴다 — 두
-// 곳이 각자 사본을 갖고 있다가 하나가 새 코드를 놓치는 사고를 막기 위해
-// 이 파일에는 더 이상 별도 집합을 두지 않는다.
+// 자격-증명-죽음 판정은 core/network/error_code.dart의 isAuthFailure가
+// 정본이다. AuthInterceptor도 그 함수를 그대로 부른다 — 집합만 공유하고
+// 판정 로직은 각자 갖고 있다가 서로 다르게 굴게 되는 것이 실제 버그의
+// 근원이었으므로, 이 파일에는 집합도 판정도 두지 않는다.
 
 class SessionController extends AsyncNotifier<SessionState> {
   /// 진행 중인 판별(_resolve)이나 커맨드(onAuthenticated/refreshProfile/
-  /// signOut)가 여러 개 겹칠 때, 가장 나중에 시작한 것만 상태와 스토리지에
-  /// 반영되도록 하는 세대 번호. build()가 다시 호출되는 것(초기 진입,
-  /// sessionExpiredProvider 증가, 재시도용 invalidate)도 여기 포함된다 —
-  /// Riverpod는 build() 호출이 새로 시작되면 이전 build()의 *상태 반영*은
-  /// 알아서 버리지만, 이미 시작된 부수효과(토큰 저장/삭제)까지 취소해주지는
-  /// 않으므로 그 부분은 이 카운터로 직접 막는다.
-  int _generation = 0;
-
-  /// 토큰 저장소에 대한 모든 쓰기(save/clear)를 이 큐로 직렬화한다. 세대
-  /// 검사만으로는 "쓰기 호출 자체는 막지 못하고 그 결과 반영만 막는" 반쪽
-  /// 방어가 된다 — 커맨드/판별이 겹치면 늦게 시작한 쪽의 save()가 먼저
-  /// 끝나고, 먼저 시작한 쪽의 save()가 나중에 끝나 저장소를 조용히
-  /// 되돌릴 수 있다. 모든 쓰기를 한 큐로 순서대로 실행하면 "나중에 큐에
-  /// 들어온 쓰기가 항상 마지막에 저장소에 닿는다"가 보장되고, 큐 차례가
-  /// 됐을 때 세대를 다시 확인해 이미 낡은 요청이면 아예 쓰지 않는다.
-  Future<void> _tokenWriteQueue = Future<void>.value();
+  /// signOut)가 여러 개 겹칠 때 어느 것이 최신인지 가리는 세대 번호와, 토큰
+  /// 쓰기를 직렬화하는 큐는 [TokenWriteCoordinator]가 갖고 있다. 여기 두지
+  /// 않는 이유는 AuthInterceptor도 같은 카운터와 같은 큐를 써야 하기
+  /// 때문이다 — 인터셉터가 저장소에 직접 쓰던 시절에는 로그아웃과 재발급이
+  /// 겹치면 로그아웃 뒤에 회전된 토큰이 저장되는 일이 실제로 가능했다.
+  ///
+  /// build()가 다시 호출되는 것(초기 진입, sessionExpiredProvider 증가,
+  /// 재시도용 invalidate)도 세대에 포함된다 — Riverpod는 build()가 새로
+  /// 시작되면 이전 build()의 *상태 반영*은 알아서 버리지만, 이미 시작된
+  /// 부수효과(토큰 저장/삭제)까지 취소해주지는 않으므로 그 부분은 세대로
+  /// 직접 막는다.
+  ///
+  /// 정확히 보장되는 것: 낡은 커맨드는 저장소에도 쓰지 않고([_publish]가
+  /// 아무것도 하지 않으므로) 상태도 건드리지 않는다. 유일한 예외는 build()의
+  /// **반환값**인데, 그건 Riverpod가 대신 대입하므로 우리가 "아무것도 하지
+  /// 않기"를 고를 수 없다 — 그래서 [_settle]이 지금 상태를 그대로 되돌려
+  /// 현상 유지시킨다.
+  TokenWriteCoordinator get _tokens => ref.read(tokenWriteCoordinatorProvider);
 
   @override
   Future<SessionState> build() async {
@@ -70,12 +73,11 @@ class SessionController extends AsyncNotifier<SessionState> {
   }
 
   Future<SessionState> _resolve() async {
-    final generation = ++_generation;
-    final store = ref.read(tokenStoreProvider);
+    final generation = _tokens.beginOperation();
 
     final String? refreshToken;
     try {
-      refreshToken = await store.readRefreshToken();
+      refreshToken = await _tokens.readRefreshToken();
     } catch (_) {
       // 키체인/키스토어 접근 자체가 깨진 경우. 자격 증명이 무효라고 단정할
       // 근거가 없으므로 토큰을 건드리지 않는다.
@@ -93,7 +95,7 @@ class SessionController extends AsyncNotifier<SessionState> {
       // 받은 토큰은 낡은 것일 수 있다 — 빠른 경로로 미리 걸러 불필요한
       // 큐 진입/토큰 재조회를 피한다. 최종 방어선은 여전히 큐 안의 세대
       // 재확인이다.
-      if (generation != _generation) return _current();
+      if (generation != _tokens.generation) return _current();
 
       await _writeTokens(
         generation,
@@ -105,7 +107,7 @@ class SessionController extends AsyncNotifier<SessionState> {
       final resolved = profile.hasClub ? SessionReady(profile) : SessionNeedsClub(profile);
       return _settle(generation, resolved);
     } on ApiException catch (error) {
-      if (isAuthFailureCode(error.code)) {
+      if (isAuthFailure(code: error.code, statusCode: error.statusCode)) {
         try {
           await _clearTokens(generation);
         } catch (_) {
@@ -123,7 +125,7 @@ class SessionController extends AsyncNotifier<SessionState> {
 
   /// 로그인/회원가입 성공 직후 호출한다.
   Future<void> onAuthenticated(TokenResponse tokens) async {
-    final generation = ++_generation;
+    final generation = _tokens.beginOperation();
     state = const AsyncValue.loading();
 
     SessionState result;
@@ -133,10 +135,9 @@ class SessionController extends AsyncNotifier<SessionState> {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
       );
-      if (generation != _generation) {
-        state = AsyncValue.data(_current());
-        return;
-      }
+      // 저장을 기다리는 사이 더 최신 커맨드가 시작됐다면 이 로그인 결과는
+      // 이미 남의 것이다 — 상태를 건드리지 않고 그대로 빠진다.
+      if (generation != _tokens.generation) return;
 
       final profile = await ref.read(authRepositoryProvider).fetchMe();
       // 토큰 저장은 이미 끝났다 — 프로필 조회 실패만으로 로그아웃 취급하지
@@ -152,7 +153,7 @@ class SessionController extends AsyncNotifier<SessionState> {
       // 자체가 없다는 뜻이다. 재시도 화면에 가두는 대신 _resolve()와 같은
       // 분류를 적용해 SignedOut으로 보내고 다시 로그인하게 한다 — 최악의
       // 경우도 재입력 한 번일 뿐, 복구 불가능한 재시도 화면보다는 낫다.
-      if (isAuthFailureCode(error.code)) {
+      if (isAuthFailure(code: error.code, statusCode: error.statusCode)) {
         try {
           await _clearTokens(generation);
         } catch (_) {
@@ -166,19 +167,19 @@ class SessionController extends AsyncNotifier<SessionState> {
       result = const SessionUnavailable('로그인 정보를 저장하지 못했습니다.');
     }
 
-    state = AsyncValue.data(_settle(generation, result));
+    _publish(generation, result);
   }
 
   /// 초대코드 가입 성공 직후 호출한다.
   Future<void> refreshProfile() async {
-    final generation = ++_generation;
+    final generation = _tokens.beginOperation();
 
     SessionState result;
     try {
       final profile = await ref.read(authRepositoryProvider).fetchMe();
       result = profile.hasClub ? SessionReady(profile) : SessionNeedsClub(profile);
     } on ApiException catch (error) {
-      if (isAuthFailureCode(error.code)) {
+      if (isAuthFailure(code: error.code, statusCode: error.statusCode)) {
         // _resolve()와 동일한 분류를 적용한다 — 이미 로그인된 사용자의
         // 토큰이 그 사이 만료/폐기됐다는 뜻이므로 재시도 화면이 아니라
         // 로그인 화면으로 보내야 한다.
@@ -195,11 +196,11 @@ class SessionController extends AsyncNotifier<SessionState> {
       result = const SessionUnavailable('프로필을 다시 불러오지 못했습니다.');
     }
 
-    state = AsyncValue.data(_settle(generation, result));
+    _publish(generation, result);
   }
 
   Future<void> signOut() async {
-    final generation = ++_generation;
+    final generation = _tokens.beginOperation();
     try {
       await ref.read(authRepositoryProvider).logout();
     } on ApiException {
@@ -211,21 +212,33 @@ class SessionController extends AsyncNotifier<SessionState> {
       // 스토어 정리가 실패해도 사용자가 요청한 로그아웃 자체는 반드시
       // 반영한다 — 화면이 여전히 로그인 상태로 남아있으면 안 된다.
     } finally {
-      state = AsyncValue.data(_settle(generation, const SessionSignedOut()));
+      _publish(generation, const SessionSignedOut());
     }
   }
 
-  /// [generation]이 이 커맨드/판별이 시작된 이후로 바뀌지 않았을 때만
-  /// [result]를 반영한다. 바뀌었다면 그 사이 다른 커맨드가 이미 최신 상태를
-  /// 발행했다는 뜻이므로 [result]는 버리고 현재 상태를 그대로 돌려준다.
+  /// 커맨드(onAuthenticated/refreshProfile/signOut)가 결과를 상태로
+  /// 내보내는 유일한 경로. [generation]이 낡았다면 **아무것도 하지 않는다** —
+  /// 예전에는 이 자리에서 `_settle`이 돌려준 "현재 상태"를 다시 대입했는데,
+  /// 아직 아무 상태도 발행되지 않았을 때는 그 값이 실제로는 존재한 적 없는
+  /// SessionUnavailable이라, 진행 중인 최신 로그인 위에 재시도 화면을
+  /// 덮어씌울 수 있었다.
+  void _publish(int generation, SessionState result) {
+    if (generation != _tokens.generation) return;
+    state = AsyncValue.data(result);
+  }
+
+  /// [_resolve]가 build()에 돌려줄 값을 고른다. 커맨드와 달리 build()의
+  /// 반환값은 Riverpod가 대신 상태에 대입하므로 "아무것도 하지 않는다"를
+  /// 고를 수 없다 — 낡았다면 지금 상태를 그대로 되돌려 현상 유지시킨다.
   SessionState _settle(int generation, SessionState result) {
-    if (generation != _generation) return _current();
+    if (generation != _tokens.generation) return _current();
     return result;
   }
 
-  /// 세대가 어긋나 결과를 버릴 때 돌려줄, 지금 이 순간의 상태. 최초 판별이
-  /// 시작되기도 전에 세대가 어긋나는 경우처럼 아직 어떤 상태도 없다면
-  /// 안전한 기본값으로 떨어진다.
+  /// 세대가 어긋나 결과를 버릴 때 돌려줄, 지금 이 순간의 상태. 아직 어떤
+  /// 상태도 발행된 적이 없다면(= 최초 판별이 끝나기도 전에 세대가 어긋난
+  /// 경우) 스플래시가 재시도 UI를 띄우는 상태로 떨어진다 — 사용자가 버튼
+  /// 하나로 다시 판별시킬 수 있으므로 갇히지 않는다.
   SessionState _current() {
     return state.value ?? const SessionUnavailable('세션 판별이 취소되었습니다.');
   }
@@ -235,32 +248,14 @@ class SessionController extends AsyncNotifier<SessionState> {
     required String accessToken,
     required String refreshToken,
   }) {
-    return _enqueueTokenWrite(
+    return _tokens.save(
       generation,
-      () => ref.read(tokenStoreProvider).save(
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-          ),
+      accessToken: accessToken,
+      refreshToken: refreshToken,
     );
   }
 
-  Future<void> _clearTokens(int generation) {
-    return _enqueueTokenWrite(generation, () => ref.read(tokenStoreProvider).clear());
-  }
-
-  /// [write]를 `_tokenWriteQueue`에 이어붙여 실행한다. 이 요청보다 먼저
-  /// 큐에 들어온 쓰기가 전부 끝난 뒤 자기 차례가 됐을 때 세대를 다시
-  /// 확인하고, 그 사이 더 최신 커맨드/판별이 시작됐다면(세대가 바뀌었다면)
-  /// 아예 쓰지 않고 건너뛴다. 개별 쓰기가 실패해도 큐 자체는 막히지 않게
-  /// 다음 쓰기로 넘어갈 수 있는 채널을 항상 유지한다.
-  Future<void> _enqueueTokenWrite(int generation, Future<void> Function() write) {
-    final scheduled = _tokenWriteQueue.then((_) {
-      if (generation != _generation) return Future<void>.value();
-      return write();
-    });
-    _tokenWriteQueue = scheduled.then((_) {}, onError: (_) {});
-    return scheduled;
-  }
+  Future<void> _clearTokens(int generation) => _tokens.clear(generation);
 }
 
 final sessionControllerProvider =

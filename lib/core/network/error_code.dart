@@ -52,10 +52,7 @@ enum ErrorCode {
 }
 
 /// "자격 증명 자체가 죽었다" — 재시도가 아니라 재로그인이 필요하다는 뜻인
-/// 코드들의 공용 집합. [SessionController]와 [AuthInterceptor]가 이 판정을
-/// 여기 한 곳에서 공유한다 — 예전에는 SessionController 안에 사본이 있었고
-/// AuthInterceptor는 아예 분류를 하지 않았는데(무조건 만료), 두 곳이 서로
-/// 다른 정책을 갖게 되는 것 자체가 버그의 근원이었다.
+/// 코드들의 공용 집합.
 ///
 /// 여기 없는 코드는 전부 일시적 실패로 취급된다(네트워크 단절, 5xx, 응답
 /// 파싱 실패 등) — 토큰을 지울 근거가 없다.
@@ -71,3 +68,26 @@ const Set<ErrorCode> authFailureCodes = {
 };
 
 bool isAuthFailureCode(ErrorCode code) => authFailureCodes.contains(code);
+
+/// 실패 응답 하나가 "자격 증명 자체가 죽었다"를 뜻하는지 판정하는 **정본**.
+/// SessionController와 AuthInterceptor가 둘 다 이 함수를 부른다 — 예전에는
+/// 집합만 공유하고 판정은 각자 했는데, 그 결과 인터셉터는 401/403이 아닌
+/// 응답을 코드도 보지 않고 일시적 실패로 넘겨버리고 컨트롤러는 상태 코드와
+/// 무관하게 코드만 봤다. 실 백엔드가 `MEMBER_NOT_FOUND`를 **404**로
+/// 내려주기 때문에 이 어긋남은 그대로 버그였다: 재발급이 404
+/// MEMBER_NOT_FOUND로 실패해도 인터셉터는 토큰을 남기고 만료 콜백도 부르지
+/// 않아, 사용자가 모든 요청이 실패하는 화면에서 로그인으로 돌아갈 길 없이
+/// 갇혔다.
+///
+/// 판정 규칙:
+/// - 서버가 내려준 `error.code`가 정본이다. 인식된 코드라면 상태 코드가
+///   무엇이든(404 포함) 그 코드가 말하는 대로 따른다.
+/// - 코드를 읽어내지 못했을 때([ErrorCode.unknown] — 래퍼가 아닌 바디,
+///   `code` 누락, 매핑되지 않은 새 코드)에만 상태 코드를 근거로 삼는다.
+///   401/403은 그 자체로 "자격 증명이 거부됐다"는 충분한 증거다.
+/// - 응답이 아예 없거나(네트워크 단절·타임아웃 → [ErrorCode.network]) 5xx면
+///   자격 증명을 무효라고 볼 근거가 없다.
+bool isAuthFailure({required ErrorCode code, required int? statusCode}) {
+  if (code != ErrorCode.unknown) return isAuthFailureCode(code);
+  return statusCode == 401 || statusCode == 403;
+}
