@@ -22,10 +22,9 @@ class AuthInterceptor extends Interceptor {
 
   final void Function() _onSessionExpired;
 
-  /// 진행 중인 재발급이 있으면 그 Future를 공유한다. refresh token을 읽는 것부터
-  /// 실패 처리까지 전부 이 flight 안에서 일어나야 한다 — 밖에서 먼저 읽어두면,
-  /// 그 사이 다른 flight가 이미 토큰을 회전시켜서 낡은 refresh token으로 또
-  /// 재발급을 시도하는 경쟁 상태가 생긴다.
+  /// 진행 중인 재발급이 있으면 그 Future를 공유한다. 스토어를 다시 읽는
+  /// 시점(현재 토큰 비교, refresh token 읽기)이 전부 이 flight 안이어야
+  /// "다른 flight가 이미 회전시킨 값"과 경합하지 않는다.
   Future<String?>? _inFlight;
 
   @override
@@ -52,12 +51,15 @@ class AuthInterceptor extends Interceptor {
     final sentToken = _bearerOf(err.requestOptions);
     final currentToken = await _store.readAccessToken();
 
-    // 다른 요청이 이미 갱신을 끝냈다면 재발급 없이 재시도만 한다.
+    // 다른 요청이 이미 갱신을 끝냈다면 재발급 없이 재시도만 한다. 흔한
+    // 경우엔 여기서 바로 끝나 flight를 만들 필요조차 없다 — 다만 이 검사는
+    // flight 밖에서 이뤄지므로 최종 방어선은 아니다. 이 검사를 통과해도
+    // `_tryRefresh` 안에서 한 번 더 같은 검사를 한다.
     if (currentToken != null && currentToken != sentToken) {
       return _retry(err, currentToken, handler);
     }
 
-    final newAccessToken = await _refreshOnce();
+    final newAccessToken = await _refreshOnce(sentToken);
     return newAccessToken == null
         ? handler.next(err)
         : _retry(err, newAccessToken, handler);
@@ -85,51 +87,63 @@ class AuthInterceptor extends Interceptor {
   /// 동시에 여러 401이 진행 중이어도 실제 재발급 호출은 하나만 나가도록 한다.
   /// null 체크와 대입 사이에 다른 코드가 끼어들 수 없다는 Dart 이벤트 루프의
   /// 특성 덕분에 `??=` 만으로 충분하다.
-  Future<String?> _refreshOnce() {
-    return _inFlight ??= _runRefresh().whenComplete(() => _inFlight = null);
+  Future<String?> _refreshOnce(String? sentAccessToken) {
+    return _inFlight ??= _runRefresh(sentAccessToken).whenComplete(() => _inFlight = null);
   }
 
-  /// refresh token 읽기, 실패 처리, 세션 만료 신호까지 전부 이 안에서 한다 —
-  /// 바깥(예: `onError`)에서 미리 읽으면, 그 사이 다른 flight가 이미 토큰을
-  /// 회전시켜서 이 호출이 낡은 refresh token을 들고 들어올 수 있다. 성공 시
-  /// 새 access token을 반환하고, 실패 시 세션을 정리하고 null을 반환한다.
-  Future<String?> _runRefresh() async {
-    final refreshToken = await _store.readRefreshToken();
-    if (refreshToken == null) {
+  /// 세션 만료는 정확히 이 한 곳에서만 일어난다. `_tryRefresh`가 무엇 때문에
+  /// 실패했든(네트워크, 파싱, 저장, 스토리지 읽기) 전부 null로 뭉뚱그려져
+  /// 여기로 오고, null이면 딱 한 번 `_expireSession()`을 부른다 — 그래서
+  /// "실패 경로마다 만료 신호를 빼먹지 않고 넣었나"를 챙길 필요가 없고,
+  /// 반대로 두 번 불릴 걱정도 없다.
+  Future<String?> _runRefresh(String? sentAccessToken) async {
+    final token = await _tryRefresh(sentAccessToken);
+    if (token == null) {
       await _expireSession();
-      return null;
     }
+    return token;
+  }
 
+  /// 실패는 전부 null로 환원한다. 여기서는 절대 `_expireSession()`을 부르지
+  /// 않는다 — 그 책임은 호출부(`_runRefresh`) 한 곳에만 있다.
+  ///
+  /// 알려진 한계: `catch (_)`가 원래 예외와 스택 트레이스를 버린다. 그래서
+  /// 이 안에 진짜 프로그래밍 오류가 있어도 요란하게 죽는 대신 조용히 세션
+  /// 만료로 나타난다. 지금 이 프로젝트엔 로깅 인프라가 없고, 여기서 임의
+  /// 예외를 밖으로 새게 두면 하류가 전부 의존하는 "호출자는 ApiException만
+  /// 본다"는 계약이 깨지므로 감수한다. 로깅이 생기면 재검토한다.
+  Future<String?> _tryRefresh(String? sentAccessToken) async {
     try {
+      // 이 flight가 실제로 시작되기 전에 다른 flight가 이미 갱신을 끝냈을
+      // 수 있다 — `onError`의 빠른 경로 검사는 flight 밖에서 이뤄지므로,
+      // 그 검사 이후 이 flight가 실행될 때까지 사이에 다른 flight가 끼어들
+      // 여지가 있다. `_inFlight`는 이전 flight가 저장을 마친 뒤에야
+      // 비워지므로, 여기서 다시 읽은 값은 항상 최신이다.
+      final current = await _store.readAccessToken();
+      if (current != null && current != sentAccessToken) {
+        return current;
+      }
+
+      final refreshToken = await _store.readRefreshToken();
+      if (refreshToken == null) return null;
+
       final response = await _bare().post<Object?>(
         '/auth/refresh',
         data: {'refreshToken': refreshToken},
       );
       final body = response.data;
-      if (body is! Map<String, dynamic> || body['success'] != true) {
-        await _expireSession();
-        return null;
-      }
+      if (body is! Map<String, dynamic> || body['success'] != true) return null;
 
       final data = body['data'];
-      if (data is! Map<String, dynamic>) {
-        await _expireSession();
-        return null;
-      }
+      if (data is! Map<String, dynamic>) return null;
 
       final accessToken = data['accessToken'] as String?;
       final newRefreshToken = data['refreshToken'] as String?;
-      if (accessToken == null || newRefreshToken == null) {
-        await _expireSession();
-        return null;
-      }
+      if (accessToken == null || newRefreshToken == null) return null;
 
       await _store.save(accessToken: accessToken, refreshToken: newRefreshToken);
       return accessToken;
     } catch (_) {
-      // DioException뿐 아니라 응답 파싱 실패·저장 실패까지 전부 여기로 와서
-      // 세션 정리로 이어져야 한다 — 그중 무엇도 밖으로 새어나가면 안 된다.
-      await _expireSession();
       return null;
     }
   }
