@@ -38,18 +38,10 @@ class SessionUnavailable extends SessionState {
   final String message;
 }
 
-/// refresh 응답 코드 중 "자격 증명 자체가 죽었다"는 뜻인 것만 SignedOut으로
-/// 취급한다. 그 외(네트워크 단절, 5xx, 파싱 실패 등)는 토큰을 지울 근거가
-/// 없다 — 다시 시도하면 될 수도 있는 일시적 실패다.
-const Set<ErrorCode> _authFailureCodes = {
-  ErrorCode.tokenExpired,
-  ErrorCode.tokenInvalid,
-  ErrorCode.tokenMissing,
-  ErrorCode.refreshTokenRevoked,
-  ErrorCode.invalidCredentials,
-};
-
-bool _isAuthFailure(ErrorCode code) => _authFailureCodes.contains(code);
+// 자격-증명-죽음 판정은 core/network/error_code.dart의 authFailureCodes /
+// isAuthFailureCode가 정본이다. AuthInterceptor도 같은 판정을 쓴다 — 두
+// 곳이 각자 사본을 갖고 있다가 하나가 새 코드를 놓치는 사고를 막기 위해
+// 이 파일에는 더 이상 별도 집합을 두지 않는다.
 
 class SessionController extends AsyncNotifier<SessionState> {
   /// 진행 중인 판별(_resolve)이나 커맨드(onAuthenticated/refreshProfile/
@@ -113,7 +105,7 @@ class SessionController extends AsyncNotifier<SessionState> {
       final resolved = profile.hasClub ? SessionReady(profile) : SessionNeedsClub(profile);
       return _settle(generation, resolved);
     } on ApiException catch (error) {
-      if (_isAuthFailure(error.code)) {
+      if (isAuthFailureCode(error.code)) {
         try {
           await _clearTokens(generation);
         } catch (_) {
@@ -149,12 +141,27 @@ class SessionController extends AsyncNotifier<SessionState> {
       final profile = await ref.read(authRepositoryProvider).fetchMe();
       // 토큰 저장은 이미 끝났다 — 프로필 조회 실패만으로 로그아웃 취급하지
       // 않는다. 유효한 자격 증명이 스토리지에 남아 있는데 로그인 화면으로
-      // 돌려보내는 건 잘못된 결과다. (fetchMe가 인증 오류를 내더라도 로그인
-      // 직후라 판단이 모호하므로 여기서는 분류하지 않는다 — SessionUnavailable이
-      // 더 안전한 보고다.)
+      // 돌려보내는 건 잘못된 결과다.
       result = profile.hasClub ? SessionReady(profile) : SessionNeedsClub(profile);
     } on ApiException catch (error) {
-      result = SessionUnavailable(error.message);
+      // 예전엔 방금 로그인했다는 이유로 fetchMe의 인증 오류도 분류하지 않고
+      // 전부 SessionUnavailable로 보냈다("판단이 모호하다"는 이유였다).
+      // 하지만 여기서 도달 가능한 인증-실패 코드는 전부 재시도로 복구되지
+      // 않는다 — 방금 발급된 토큰이 TOKEN_EXPIRED일 리 없고, TOKEN_INVALID/
+      // TOKEN_MISSING은 클라이언트 버그를 뜻하며, MEMBER_NOT_FOUND는 계정
+      // 자체가 없다는 뜻이다. 재시도 화면에 가두는 대신 _resolve()와 같은
+      // 분류를 적용해 SignedOut으로 보내고 다시 로그인하게 한다 — 최악의
+      // 경우도 재입력 한 번일 뿐, 복구 불가능한 재시도 화면보다는 낫다.
+      if (isAuthFailureCode(error.code)) {
+        try {
+          await _clearTokens(generation);
+        } catch (_) {
+          // 스토어 정리 실패는 무시한다 — 어차피 SignedOut으로 보고한다.
+        }
+        result = const SessionSignedOut();
+      } else {
+        result = SessionUnavailable(error.message);
+      }
     } catch (_) {
       result = const SessionUnavailable('로그인 정보를 저장하지 못했습니다.');
     }
@@ -171,7 +178,7 @@ class SessionController extends AsyncNotifier<SessionState> {
       final profile = await ref.read(authRepositoryProvider).fetchMe();
       result = profile.hasClub ? SessionReady(profile) : SessionNeedsClub(profile);
     } on ApiException catch (error) {
-      if (_isAuthFailure(error.code)) {
+      if (isAuthFailureCode(error.code)) {
         // _resolve()와 동일한 분류를 적용한다 — 이미 로그인된 사용자의
         // 토큰이 그 사이 만료/폐기됐다는 뜻이므로 재시도 화면이 아니라
         // 로그인 화면으로 보내야 한다.

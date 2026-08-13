@@ -31,6 +31,13 @@ class _ScriptedAdapter implements HttpClientAdapter {
     _rules.add(_Rule(method, path, when, statusCode, body, holdUntil));
   }
 
+  /// 응답 자체가 오지 않는 상황(연결 끊김, 타임아웃)을 흉내낸다 — 상태
+  /// 코드도 바디도 없는 실패다. 실제 Dio 어댑터가 소켓 단계에서 실패하면
+  /// 이렇게 `response`가 없는 `DioException`을 던진다.
+  void onConnectionError(String method, String path) {
+    _rules.add(_Rule(method, path, null, null, null, null));
+  }
+
   int callsTo(String method, String path) => _callCounts['$method $path'] ?? 0;
 
   /// [count]번째 `method path` 호출이 어댑터에 "도착"하는 순간(응답을
@@ -71,9 +78,18 @@ class _ScriptedAdapter implements HttpClientAdapter {
         if (rule.holdUntil != null) {
           await rule.holdUntil;
         }
+        if (rule.statusCode == null) {
+          // 응답이 아예 없는 실패(연결 끊김/타임아웃) — 실제 어댑터가 소켓
+          // 단계에서 던지는 것과 같은 모양: response가 없는 DioException.
+          throw DioException(
+            requestOptions: options,
+            type: DioExceptionType.connectionError,
+            error: 'Connection failed',
+          );
+        }
         return ResponseBody.fromString(
-          jsonEncode(rule.body(options)),
-          rule.statusCode,
+          jsonEncode(rule.body!(options)),
+          rule.statusCode!,
           headers: {
             Headers.contentTypeHeader: [Headers.jsonContentType],
           },
@@ -93,8 +109,8 @@ class _Rule {
   final String method;
   final String path;
   final bool Function(RequestOptions options)? when;
-  final int statusCode;
-  final Object? Function(RequestOptions options) body;
+  final int? statusCode;
+  final Object? Function(RequestOptions options)? body;
   final Future<void>? holdUntil;
 }
 
@@ -262,6 +278,62 @@ void main() {
     expect(await store.readAccessToken(), isNull);
     expect(await store.readRefreshToken(), isNull);
     expect(expiredCallbackCount, 1);
+  });
+
+  group('재발급 실패의 원인에 따라 세션을 지울지 결정한다 (Task 7 정책과 정렬)', () {
+    // 리뷰에서 지적된 정책 모순: Task 5는 "실패하면 무조건 만료"를,
+    // Task 7은 "자격 증명 실패만 만료"를 요구했고 이 인터셉터는 Task 5
+    // 시절 그대로 남아 있었다. 재발급 도중 네트워크가 끊긴 것뿐인데
+    // 세션을 지우고 로그아웃시키는 것이 바로 Task 7이 없애려 했던
+    // "오프라인이면 로그아웃되는" 버그다.
+    test('재발급이 연결 오류로 실패하면 토큰을 지우지 않고 만료 콜백도 부르지 않는다', () async {
+      adapter.onConnectionError('POST', '/auth/refresh');
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      await expectLater(dio.get<Object?>('/me'), throwsA(isA<DioException>()));
+
+      expect(await store.readAccessToken(), 'old-access', reason: '네트워크 실패는 세션을 지울 근거가 아니다');
+      expect(await store.readRefreshToken(), 'refresh-1');
+      expect(expiredCallbackCount, 0, reason: '오프라인 한 번으로 로그아웃되면 안 된다');
+    });
+
+    test('재발급이 자격-증명-죽음 코드(401)로 실패하면 토큰을 지우고 만료 콜백을 부른다', () async {
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'REFRESH_TOKEN_INVALID', 'message': '형식 오류'},
+        },
+      );
+      adapter.on(
+        'GET',
+        '/me',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+
+      await expectLater(dio.get<Object?>('/me'), throwsA(isA<DioException>()));
+
+      expect(await store.readAccessToken(), isNull);
+      expect(await store.readRefreshToken(), isNull);
+      expect(expiredCallbackCount, 1);
+    });
   });
 
   test('저장된 refresh token이 없으면 재발급을 시도하지 않는다', () async {
