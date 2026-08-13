@@ -82,9 +82,10 @@ void main() {
       await tester.pumpAndSettle();
 
       // `/invite` GoRoute가 라우트 트리에서 빠지거나 다른 화면을 가리키면
-      // 이 expect가 실패한다(라우트가 아예 없으면 go_router가 리다이렉트
-      // 시점에 예외를 던져 pump 자체가 실패하고, 다른 화면을 가리키면
-      // 여기서 InviteCodeScreen을 찾지 못해 실패한다).
+      // 여기서 InviteCodeScreen을 찾지 못해 이 expect가 실패한다 — 실제로
+      // GoRoute를 지워서 확인했다: go_router가 예외를 던지지는 않고,
+      // computeRedirect가 여전히 가리키는 "/invite" 경로에 매칭되는 화면이
+      // 없으니 InviteCodeScreen이 그냥 렌더링되지 않는다(찾은 위젯 수 0).
       expect(find.byType(InviteCodeScreen), findsOneWidget);
     },
   );

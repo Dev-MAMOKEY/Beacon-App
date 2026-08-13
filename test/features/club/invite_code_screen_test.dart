@@ -169,8 +169,10 @@ void main() {
     await tester.pump();
 
     // 공백 6개 — String.length로는 6자리를 채우지만 실제로 서버에 보낼 만한
-    // 코드가 아니다. FilteringTextInputFormatter가 없다면 버튼이 활성화되고
-    // 공백이 그대로 전송된다.
+    // 코드가 아니다. FilteringTextInputFormatter가 없다면 공백이 그대로
+    // 필드에 남아 6자리를 채운 것처럼 보이고 버튼도 활성화된다(이 테스트가
+    // 직접 보는 것은 여기까지다 — 그 뒤 실제로 서버에 전송되는지는 별개로
+    // club_repository_test.dart가 확인한다).
     await tester.enterText(find.byType(TextField), '      ');
     await tester.pump();
     expect(
