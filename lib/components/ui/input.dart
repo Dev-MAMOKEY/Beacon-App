@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
@@ -16,6 +17,7 @@ class AppInput extends StatelessWidget {
     this.maxLength,
     this.suffix,
     this.onChanged,
+    this.inputFormatters,
   });
 
   final TextEditingController controller;
@@ -28,6 +30,7 @@ class AppInput extends StatelessWidget {
   final int? maxLength;
   final Widget? suffix;
   final ValueChanged<String>? onChanged;
+  final List<TextInputFormatter>? inputFormatters;
 
   @override
   Widget build(BuildContext context) {
@@ -58,6 +61,7 @@ class AppInput extends StatelessWidget {
             keyboardType: keyboardType,
             textCapitalization: textCapitalization,
             maxLength: maxLength,
+            inputFormatters: inputFormatters,
             style: typography.body2.copyWith(color: colors.gray3),
             onChanged: onChanged,
             decoration: InputDecoration(
