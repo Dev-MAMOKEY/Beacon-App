@@ -6,7 +6,79 @@ import 'package:beacon_app/core/theme/app_typography.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// `AppColors`의 모든 필드를 읽고 쓰는 표. 필드를 추가하면 여기에 한 줄
+/// 추가해야 한다 — 아래 두 테이블 테스트가 개수도 함께 고정한다.
+final _colorFields = <String, (Color Function(AppColors), AppColors Function(AppColors, Color))>{
+  'main': ((c) => c.main, (c, v) => c.copyWith(main: v)),
+  'bg': ((c) => c.bg, (c, v) => c.copyWith(bg: v)),
+  'white': ((c) => c.white, (c, v) => c.copyWith(white: v)),
+  'gray1': ((c) => c.gray1, (c, v) => c.copyWith(gray1: v)),
+  'gray2': ((c) => c.gray2, (c, v) => c.copyWith(gray2: v)),
+  'gray3': ((c) => c.gray3, (c, v) => c.copyWith(gray3: v)),
+  'gray4': ((c) => c.gray4, (c, v) => c.copyWith(gray4: v)),
+  'yellow': ((c) => c.yellow, (c, v) => c.copyWith(yellow: v)),
+  'red': ((c) => c.red, (c, v) => c.copyWith(red: v)),
+  'green': ((c) => c.green, (c, v) => c.copyWith(green: v)),
+  'disconnectedGlow': ((c) => c.disconnectedGlow, (c, v) => c.copyWith(disconnectedGlow: v)),
+  'scrim': ((c) => c.scrim, (c, v) => c.copyWith(scrim: v)),
+  'label': ((c) => c.label, (c, v) => c.copyWith(label: v)),
+  'attendancePresent': ((c) => c.attendancePresent, (c, v) => c.copyWith(attendancePresent: v)),
+  'attendanceLate': ((c) => c.attendanceLate, (c, v) => c.copyWith(attendanceLate: v)),
+  'attendanceAbsent': ((c) => c.attendanceAbsent, (c, v) => c.copyWith(attendanceAbsent: v)),
+  'attendanceEtc': ((c) => c.attendanceEtc, (c, v) => c.copyWith(attendanceEtc: v)),
+};
+
+const _sentinel = Color(0xFFDEADBE);
+
+/// 모든 필드 값이 서로 다른 기준값.
+///
+/// 이 함수가 필요한 이유를 실제로 재현해서 확인했다. `AppColors.light`를
+/// 기준값으로 쓰면 `attendanceEtc`와 `gray4`가 **같은 값**이라,
+/// `attendanceEtc: attendanceEtc ?? this.gray4` 같은 오배선이 아래 표
+/// 테스트를 그대로 통과한다 — 인자를 넘긴 경우엔 `??`의 왼쪽이 이기고,
+/// 인자를 안 넘긴 경우엔 `this.gray4`가 우연히 정답과 같기 때문이다.
+/// 기준값에 중복이 하나라도 있으면 그 두 필드 사이의 오배선은 영원히
+/// 보이지 않는다. 그래서 값이 전부 다른 기준값을 따로 만든다.
+AppColors _distinctColors() {
+  var seed = 0;
+  Color next() {
+    seed++;
+    // 1..17에 대해 전부 다른 값이고 _sentinel과도 겹치지 않는다.
+    return Color(0xFF000000 | (seed * 0x010203));
+  }
+
+  return AppColors(
+    main: next(),
+    bg: next(),
+    white: next(),
+    gray1: next(),
+    gray2: next(),
+    gray3: next(),
+    gray4: next(),
+    yellow: next(),
+    red: next(),
+    green: next(),
+    disconnectedGlow: next(),
+    scrim: next(),
+    label: next(),
+    attendancePresent: next(),
+    attendanceLate: next(),
+    attendanceAbsent: next(),
+    attendanceEtc: next(),
+  );
+}
+
 void main() {
+  // 기준값이 실제로 전부 다른지부터 확인한다 — 중복이 생기면 아래 표
+  // 테스트들이 조용히 무력화된다(그게 바로 `AppColors.light`를 안 쓰는
+  // 이유다).
+  test('표 테스트의 기준값은 필드 값이 전부 다르다', () {
+    final base = _distinctColors();
+    final values = _colorFields.values.map((f) => f.$1(base).toARGB32()).toList();
+    expect(values.toSet(), hasLength(values.length), reason: '기준값에 중복이 있으면 오배선이 보이지 않는다');
+    expect(values, isNot(contains(_sentinel.toARGB32())));
+  });
+
   // 색은 `lib/core/theme/` 밖에서 하드코딩하지 않는다 — 그 금지는 Dart
   // 코드뿐 아니라 SVG 에셋 안에도 적용된다. 에셋에 토큰값을 구워 넣으면
   // `AppColors`를 바꿔도 그 아이콘만 옛 색으로 남는다(오늘은 전부
@@ -80,42 +152,26 @@ void main() {
   // 빠져도) 그 테스트는 초록색이었다. 필드마다 실제로 값을 넘겨봐야
   // "인자가 그 필드에 도달하는가"를 증명할 수 있다.
   //
-  // 필드를 추가하는 사람은 아래 맵에도 한 줄 추가해야 한다 — 맵에 넣지
-  // 않으면 그 필드는 여전히 무보증이다(그래서 개수도 함께 고정해 둔다).
+  // 필드를 추가하는 사람은 [_colorFields] 맵에도 한 줄 추가해야 한다 — 맵에
+  // 넣지 않으면 그 필드는 여전히 무보증이다(그래서 개수도 함께 고정해 둔다).
   test('AppColors.copyWith()는 넘긴 필드만 바꾸고 나머지는 전부 유지한다', () {
     // 잡아야 할 잘못된 구현 두 가지:
     // 1) 새 필드를 copyWith 시그니처에만 넣고 본문에서는 `this.x`로 흘려
     //    보낸다 — 그 필드에 넘긴 인자가 조용히 무시된다.
     // 2) 필드를 잘못 배선한다(`green: green ?? this.main` 같은 복붙 실수)
     //    — 한 필드를 바꿨는데 다른 필드까지 같이 바뀐다.
-    const original = AppColors.light;
-    const sentinel = Color(0xFF0B0C0D);
+    final original = _distinctColors();
+    const sentinel = _sentinel;
 
-    final fields = <String, (Color Function(AppColors), AppColors Function(AppColors, Color))>{
-      'main': ((c) => c.main, (c, v) => c.copyWith(main: v)),
-      'bg': ((c) => c.bg, (c, v) => c.copyWith(bg: v)),
-      'white': ((c) => c.white, (c, v) => c.copyWith(white: v)),
-      'gray1': ((c) => c.gray1, (c, v) => c.copyWith(gray1: v)),
-      'gray2': ((c) => c.gray2, (c, v) => c.copyWith(gray2: v)),
-      'gray3': ((c) => c.gray3, (c, v) => c.copyWith(gray3: v)),
-      'gray4': ((c) => c.gray4, (c, v) => c.copyWith(gray4: v)),
-      'yellow': ((c) => c.yellow, (c, v) => c.copyWith(yellow: v)),
-      'red': ((c) => c.red, (c, v) => c.copyWith(red: v)),
-      'green': ((c) => c.green, (c, v) => c.copyWith(green: v)),
-      'disconnectedGlow': ((c) => c.disconnectedGlow, (c, v) => c.copyWith(disconnectedGlow: v)),
-      'scrim': ((c) => c.scrim, (c, v) => c.copyWith(scrim: v)),
-      'label': ((c) => c.label, (c, v) => c.copyWith(label: v)),
-    };
+    expect(_colorFields, hasLength(17), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
 
-    expect(fields, hasLength(13), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
-
-    for (final entry in fields.entries) {
+    for (final entry in _colorFields.entries) {
       final (read, copy) = entry.value;
       final mutated = copy(original, sentinel);
 
       expect(read(mutated), sentinel, reason: '${entry.key}에 넘긴 값이 실제로 반영돼야 한다');
 
-      for (final other in fields.entries) {
+      for (final other in _colorFields.entries) {
         if (other.key == entry.key) continue;
         expect(
           other.value.$1(mutated),
@@ -127,8 +183,63 @@ void main() {
 
     // 인자를 하나도 주지 않으면 원본과 완전히 같아야 한다는 것도 함께 본다.
     final untouched = original.copyWith();
-    for (final entry in fields.entries) {
+    for (final entry in _colorFields.entries) {
       expect(entry.value.$1(untouched), entry.value.$1(original), reason: entry.key);
+    }
+  });
+
+  // Figma "날짜" 컴포넌트(`289:2875`)의 variant 배경 실측값. 이 값들은
+  // 위젯 테스트가 "출석 셀은 attendancePresent로 칠해진다"만 확인해서는
+  // 고정되지 않는다 — 토큰 자체가 엉뚱한 값이어도 위젯은 그 엉뚱한 값을
+  // 충실히 쓰기 때문에 그런 테스트는 초록색이다. 값 자체를 여기서 못박는다.
+  test('출석 상태 배지 색 4종이 Figma 실측값과 일치한다', () {
+    // 잡아야 할 잘못된 구현: variant 색을 눈대중으로 옮겨 적는다(예:
+    // attendancePresent를 main(#54A2EA)으로 대체), 또는 출석/지각 값을
+    // 서로 바꿔 넣는다.
+    const colors = AppColors.light;
+    expect(colors.attendancePresent, const Color(0xFF91CAFF));
+    expect(colors.attendanceLate, const Color(0xFFFDD97C));
+    expect(colors.attendanceAbsent, const Color(0xFFFF9797));
+    // "기타"는 Figma에 variant가 없다 — 사용자 판정으로 gray4와 같은 값을
+    // 쓴다. 같은 값이라는 사실 자체를 고정해 둔다.
+    expect(colors.attendanceEtc, const Color(0xFFE7E8E9));
+    expect(colors.attendanceEtc, colors.gray4);
+  });
+
+  // `lerp`는 생성자 인자가 전부 required라 필드를 "빠뜨릴" 수는 없다
+  // (컴파일이 안 된다) — 실제 위험은 복붙 오배선이다
+  // (`attendanceLate: Color.lerp(attendancePresent, other.attendancePresent, t)`).
+  // 기존 `lerp t=0` 테스트는 두 필드(main·disconnectedGlow)만 보고, t=0에서는
+  // 오배선된 필드도 "원본 계열의 값"이라 우연히 통과할 수 있다. 필드마다
+  // 그 필드 하나만 다른 상대와 t=1로 섞어, 그 필드가 정확히 상대의 **자기
+  // 자신** 값을 가져오는지 본다.
+  test('AppColors.lerp(t=1)은 필드마다 상대의 같은 필드 값을 가져온다', () {
+    // 잡아야 할 잘못된 구현: lerp 본문에서 필드를 잘못 배선한다 — 한 필드를
+    // 바꿨는데 다른 필드가 따라 바뀌거나, 그 필드가 안 바뀐다.
+    final original = _distinctColors();
+    const sentinel = _sentinel;
+
+    expect(_colorFields, hasLength(17), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
+
+    for (final entry in _colorFields.entries) {
+      final (read, copy) = entry.value;
+      final target = copy(original, sentinel);
+      final blended = original.lerp(target, 1);
+
+      expect(
+        read(blended).toARGB32(),
+        sentinel.toARGB32(),
+        reason: 't=1에서 ${entry.key}는 상대의 ${entry.key} 값이어야 한다',
+      );
+
+      for (final other in _colorFields.entries) {
+        if (other.key == entry.key) continue;
+        expect(
+          other.value.$1(blended).toARGB32(),
+          other.value.$1(original).toARGB32(),
+          reason: '${entry.key}만 다른 상대와 섞었는데 ${other.key}까지 바뀌었다',
+        );
+      }
     }
   });
 
