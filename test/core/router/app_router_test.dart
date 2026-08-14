@@ -163,4 +163,42 @@ void main() {
       expect(result, isNull); // 이미 스플래시 — 재시도 UI가 바로 보인다.
     });
   });
+
+  // 하단 탭이 생기면서 SessionReady는 더 이상 /home 하나만 허용하지 않는다.
+  // 이 group은 그 허용 위치 집합을 고정한다 — 예전의 단일 타겟 로직으로
+  // 되돌아가면(또는 집합 검사가 다른 세션 상태에도 새어 나가면) 실패해야
+  // 한다.
+  group('허용 위치 집합 (하단 탭)', () {
+    test('Ready가 /records에 있으면 리다이렉트하지 않는다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+        matchedLocation: AppRoutes.records,
+      );
+      expect(result, isNull);
+    });
+
+    test('Ready가 /profile에 있으면 리다이렉트하지 않는다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+        matchedLocation: AppRoutes.profile,
+      );
+      expect(result, isNull);
+    });
+
+    test('Ready가 허용 집합 밖(/nonsense)이면 /home으로 보낸다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+        matchedLocation: '/nonsense',
+      );
+      expect(result, AppRoutes.home);
+    });
+
+    test('SignedOut이 /records에 있으면 /login으로 보낸다 — 허용 집합 확장은 Ready에만 적용된다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionSignedOut()),
+        matchedLocation: AppRoutes.records,
+      );
+      expect(result, AppRoutes.login);
+    });
+  });
 }

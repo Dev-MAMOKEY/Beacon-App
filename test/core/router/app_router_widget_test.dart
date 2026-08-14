@@ -55,8 +55,14 @@ class _ProfileAuthRepository implements AuthRepository {
 
 /// 실제 `appRouterProvider`를 마운트하고 최초 리다이렉트가 끝날 때까지
 /// 진행시킨다. [clubIds]가 null이면 저장된 토큰이 없는 상태(=SignedOut)를
-/// 재현한다.
-Future<GoRouter> _pumpRealRouter(WidgetTester tester, {List<int>? clubIds}) async {
+/// 재현한다. [showAdmin]은 `showAdminTabProvider`를 override한다 — 기본값
+/// false는 실제 앱과 동일하고, true는 관리자 탭·라우트 자체의 배선을
+/// (가드와 분리해) 검증할 때 쓴다.
+Future<GoRouter> _pumpRealRouter(
+  WidgetTester tester, {
+  List<int>? clubIds,
+  bool showAdmin = false,
+}) async {
   final store = InMemoryTokenStore();
   if (clubIds != null) await store.save(accessToken: 'a', refreshToken: 'r');
 
@@ -64,6 +70,7 @@ Future<GoRouter> _pumpRealRouter(WidgetTester tester, {List<int>? clubIds}) asyn
     overrides: [
       tokenStoreProvider.overrideWithValue(store),
       authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(clubIds ?? const [])),
+      showAdminTabProvider.overrideWithValue(showAdmin),
     ],
   );
   addTearDown(container.dispose);
@@ -132,5 +139,85 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(SignupScreen), findsOneWidget);
+  });
+
+  testWidgets('하단 탭 4개의 경로가 각각 올바른 화면을 렌더한다', (tester) async {
+    // showAdmin: true로 관리자 라우트 가드를 우회해, 4개 브랜치 전부가
+    // 실제로 올바른 화면과 연결돼 있는지를 가드와 분리해서 검증한다.
+    // 가드 자체(showAdmin:false일 때 /admin이 막히는지)는 별도 테스트가
+    // 다룬다. computeRedirect가 문자열을 반환하는지만 보는 것으로는
+    // GoRoute가 트리에서 빠지거나 다른 화면을 가리키는 실수를 잡지 못한다
+    // — 실제로 각 경로를 방문해 화면 텍스트를 찾는다.
+    final router = await _pumpRealRouter(tester, clubIds: const [7], showAdmin: true);
+
+    router.go(AppRoutes.home);
+    await tester.pumpAndSettle();
+    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+
+    router.go(AppRoutes.records);
+    await tester.pumpAndSettle();
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+
+    router.go(AppRoutes.admin);
+    await tester.pumpAndSettle();
+    expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsOneWidget);
+
+    router.go(AppRoutes.profile);
+    await tester.pumpAndSettle();
+    expect(find.text('마이페이지는 #13에서 구현합니다'), findsOneWidget);
+  });
+
+  testWidgets('탭을 전환했다 돌아오면 이전 탭의 스크롤 위치와 네비게이션 스택이 보존된다', (tester) async {
+    final router = await _pumpRealRouter(tester, clubIds: const [7]);
+
+    // 기록 탭에서 목록을 스크롤해 둔다.
+    router.go(AppRoutes.records);
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, -600));
+    await tester.pumpAndSettle();
+    final scrolledOffset = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
+    expect(scrolledOffset, greaterThan(0));
+
+    // 마이 탭으로 이동한 뒤, 그 안에서 비밀번호 변경 화면까지 한 단계 더
+    // 들어간다 — 마이 탭의 네비게이션 스택이 [마이페이지, 비밀번호 변경]
+    // 두 단계가 된다.
+    await tester.tap(find.text('마이'));
+    await tester.pumpAndSettle();
+    expect(find.text('마이페이지는 #13에서 구현합니다'), findsOneWidget);
+
+    router.push(AppRoutes.passwordChange);
+    await tester.pumpAndSettle();
+    expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
+
+    // 홈 탭으로 전환했다가...
+    await tester.tap(find.text('홈'));
+    await tester.pumpAndSettle();
+    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+
+    // ...다시 마이 탭으로 돌아오면, 루트(마이페이지)가 아니라 방금
+    // 들어갔던 비밀번호 변경 화면이 그대로 남아있어야 한다.
+    await tester.tap(find.text('마이'));
+    await tester.pumpAndSettle();
+    expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
+    expect(find.text('마이페이지는 #13에서 구현합니다'), findsNothing);
+
+    // ...그리고 기록 탭으로 돌아오면 스크롤 위치도 그대로 보존돼 있어야
+    // 한다. `IndexedStack` 대신 탭마다 매번 새로 빌드하면 스크롤 가능한
+    // 위젯의 State(따라서 스크롤 위치)가 사라지고 0으로 다시 시작한다.
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+    final restoredOffset = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
+    expect(restoredOffset, scrolledOffset);
+  });
+
+  testWidgets('showAdmin: false 상태에서 /admin으로 이동하면 /home으로 차단된다', (tester) async {
+    // showAdmin 기본값 false — 실제 앱과 동일한 상태.
+    final router = await _pumpRealRouter(tester, clubIds: const [7]);
+
+    router.go(AppRoutes.admin);
+    await tester.pumpAndSettle();
+
+    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+    expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
   });
 }
