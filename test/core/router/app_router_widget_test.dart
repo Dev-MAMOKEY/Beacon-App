@@ -2,15 +2,82 @@ import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/router/app_router.dart';
 import 'package:beacon_app/core/storage/token_store.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
+import 'package:beacon_app/features/attendance/data/attendance_dto.dart';
+import 'package:beacon_app/features/attendance/data/attendance_repository.dart';
+import 'package:beacon_app/features/attendance/presentation/home_screen.dart';
 import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/data/auth_repository.dart';
 import 'package:beacon_app/features/auth/presentation/login_screen.dart';
 import 'package:beacon_app/features/auth/presentation/signup_screen.dart';
+import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
+import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
+import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
+import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
+import 'package:beacon_app/features/records/data/records_dto.dart';
+import 'package:beacon_app/features/records/data/records_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+
+/// `/home`이 이제 실제 `HomeScreen`이라 이 파일의 여러 테스트가 그 화면을
+/// (탭 전환 등을 통해) 잠깐이라도 빌드한다. `HomeScreen`은 비콘 스캐너·
+/// 비콘 설정·활성 세션·기록 리포지토리를 곧장 두드리므로, 이 테스트들이
+/// 검증하려는 건 라우팅이지 그 화면의 동작이 아니다 — 실제 네트워크/플랫폼
+/// 채널을 두드리지 않도록 아무 일도 하지 않는 페이크로 전부 막아 둔다.
+class _NoopBeaconConfigRepository implements BeaconConfigRepository {
+  @override
+  Future<BeaconConfig> fetch(int clubId) async => const BeaconConfig(
+    uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+    lateThresholdMinutes: 10,
+    rssiStabilizationSeconds: 3,
+    rssiThreshold: -70,
+  );
+}
+
+class _NoopAttendanceRepository implements AttendanceRepository {
+  @override
+  Future<ActiveSession?> fetchActiveSession(int clubId) async => null;
+
+  @override
+  Future<AttendanceStatus> checkIn({
+    required int clubId,
+    required int sessionId,
+    required String otpCode,
+  }) {
+    throw UnimplementedError('이 테스트 스위트는 출석 체크를 수행하지 않는다');
+  }
+}
+
+class _NoopRecordsRepository implements RecordsRepository {
+  @override
+  Future<MonthlyRecords> fetch({
+    required int clubId,
+    required int year,
+    required int month,
+  }) async {
+    return MonthlyRecords(
+      year: year,
+      month: month,
+      records: const [],
+      present: 0,
+      absent: 0,
+      late: 0,
+      etc: 0,
+      attendanceRate: 0,
+    );
+  }
+}
+
+/// [_pumpRealRouter]와 `showAdmin` 리다이렉트 테스트가 공통으로 쓰는
+/// `HomeScreen` 관련 override 4종.
+List<Override> _homeScreenOverrides() => [
+  beaconScannerProvider.overrideWithValue(FakeBeaconScanner()),
+  beaconConfigRepositoryProvider.overrideWithValue(_NoopBeaconConfigRepository()),
+  attendanceRepositoryProvider.overrideWithValue(_NoopAttendanceRepository()),
+  recordsRepositoryProvider.overrideWithValue(_NoopRecordsRepository()),
+];
 
 /// `app_router_test.dart`는 `computeRedirect`가 문자열 `"/invite"`를
 /// 돌려주는지만 확인하는 순수 함수 테스트다 — 그 문자열이 실제로 어떤
@@ -76,6 +143,7 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
       tokenStoreProvider.overrideWithValue(store),
       authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(clubIds ?? const [])),
       showAdminTabProvider.overrideWithValue(showAdmin),
+      ..._homeScreenOverrides(),
     ],
   );
   addTearDown(container.dispose);
@@ -124,9 +192,8 @@ void main() {
   testWidgets('동아리가 있으면 /home으로 이동해 홈 화면을 렌더링한다', (tester) async {
     await _pumpRealRouter(tester, clubIds: const [7]);
 
-    // #11에서 실제 홈 화면으로 교체되는 자리표시자. `/home` GoRoute가 없으면
-    // 아무것도 렌더링되지 않아 이 expect가 실패한다.
-    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+    // `/home` GoRoute가 없거나 다른 화면을 가리키면 이 expect가 실패한다.
+    expect(find.byType(HomeScreen), findsOneWidget);
   });
 
   testWidgets('저장된 토큰이 없으면 /login으로 이동해 LoginScreen을 렌더링한다', (tester) async {
@@ -161,7 +228,7 @@ void main() {
 
     router.go(AppRoutes.home);
     await tester.pumpAndSettle();
-    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsOneWidget);
 
     router.go(AppRoutes.records);
     await tester.pumpAndSettle();
@@ -207,7 +274,7 @@ void main() {
     // 홈 탭으로 전환했다가...
     await tester.tap(find.text('홈'));
     await tester.pumpAndSettle();
-    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsOneWidget);
 
     // ...다시 마이 탭으로 돌아오면, 루트(마이페이지)가 아니라 방금
     // 들어갔던 비밀번호 변경 화면이 그대로 남아있어야 한다.
@@ -245,7 +312,7 @@ void main() {
     router.go(AppRoutes.admin);
     await tester.pumpAndSettle();
 
-    expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+    expect(find.byType(HomeScreen), findsOneWidget);
     expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
   });
 
@@ -270,6 +337,7 @@ void main() {
           tokenStoreProvider.overrideWithValue(store),
           authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(const [7])),
           showAdminTabProvider.overrideWithValue(true),
+          ..._homeScreenOverrides(),
         ],
       );
       addTearDown(container.dispose);
@@ -297,10 +365,11 @@ void main() {
         tokenStoreProvider.overrideWithValue(store),
         authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(const [7])),
         showAdminTabProvider.overrideWithValue(false),
+        ..._homeScreenOverrides(),
       ]);
       await tester.pumpAndSettle();
 
-      expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
+      expect(find.byType(HomeScreen), findsOneWidget);
       expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
     },
   );

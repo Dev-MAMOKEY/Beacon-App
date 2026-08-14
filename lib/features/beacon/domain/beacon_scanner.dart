@@ -97,12 +97,20 @@ class BeaconOutOfRange extends BeaconScanState {
 /// 스캔 하나를 설정하는 값. 클럽마다 서버가 내려주는 [BeaconConfig]로부터
 /// 채워진다.
 class BeaconScanConfig {
-  const BeaconScanConfig({
+  // 아래 assert가 Duration 비교(인스턴스 생성·연산자 호출)를 필요로 해
+  // Dart의 컴파일타임 상수 평가기가 다룰 수 있는 범위를 벗어난다 — 그래서
+  // 이 생성자는 (Task 1 시점과 달리) 더 이상 `const`가 아니다. 기존
+  // `const BeaconScanConfig(...)` 호출부는 전부 일반 호출로 바꿨다.
+  BeaconScanConfig({
     required this.uuid,
     this.rssiThreshold = -70,
     this.stabilizationSeconds = 3,
     this.maxSampleGap = const Duration(seconds: 2),
-  });
+  }) : assert(
+         maxSampleGap <= Duration(seconds: stabilizationSeconds),
+         'maxSampleGap는 stabilizationSeconds를 넘을 수 없다 — 넘으면 그 사이의 진짜 침묵(신호 없음)도 '
+         '"연속 감지"로 오인되어, 출석 인정의 유일한 보증(실내에 계속 있었다)이 무너진다.',
+       );
 
   /// 우리 클럽 비콘의 proximity UUID. 대소문자와 하이픈 유무는 비교 시
   /// 무시한다.

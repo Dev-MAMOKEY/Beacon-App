@@ -14,6 +14,7 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.gray4,
     required this.yellow,
     required this.red,
+    required this.green,
     required this.label,
   });
 
@@ -26,6 +27,12 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color gray4;
   final Color yellow;
   final Color red;
+
+  /// 비콘 감지(홈 화면) 동심원과 출석 성공 표시에 쓰는 초록. Figma 변수에는
+  /// 없던 값이라 badge.dart의 success variant는 그동안 `main` 계열로
+  /// 대체해 왔다 — 이 값을 뽑아낸 김에 그쪽도 이 토큰으로 갱신한다.
+  final Color green;
+
   final Color label;
 
   static const AppColors light = AppColors(
@@ -38,6 +45,7 @@ class AppColors extends ThemeExtension<AppColors> {
     gray4: Color(0xFFE7E8E9),
     yellow: Color(0xFFFBBF24),
     red: Color(0xFFFF5D5D),
+    green: Color(0xFF16CE69),
     label: Color(0xFF000000),
   );
 
@@ -52,6 +60,7 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? gray4,
     Color? yellow,
     Color? red,
+    Color? green,
     Color? label,
   }) {
     return AppColors(
@@ -64,6 +73,7 @@ class AppColors extends ThemeExtension<AppColors> {
       gray4: gray4 ?? this.gray4,
       yellow: yellow ?? this.yellow,
       red: red ?? this.red,
+      green: green ?? this.green,
       label: label ?? this.label,
     );
   }
@@ -81,6 +91,7 @@ class AppColors extends ThemeExtension<AppColors> {
       gray4: Color.lerp(gray4, other.gray4, t)!,
       yellow: Color.lerp(yellow, other.yellow, t)!,
       red: Color.lerp(red, other.red, t)!,
+      green: Color.lerp(green, other.green, t)!,
       label: Color.lerp(label, other.label, t)!,
     );
   }

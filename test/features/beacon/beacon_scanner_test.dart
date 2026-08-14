@@ -155,7 +155,7 @@ class _Harness {
 }
 
 void main() {
-  const config = BeaconScanConfig(uuid: _uuid, rssiThreshold: -70, stabilizationSeconds: 3);
+  final config = BeaconScanConfig(uuid: _uuid, rssiThreshold: -70, stabilizationSeconds: 3);
 
   test('임계값 이상이 안정화 시간 미만이면 Detected를 방출하지 않는다', () async {
     // 잡아야 할 잘못된 구현: 첫 프레임에서 바로 Detected를 방출한다.
@@ -390,7 +390,7 @@ void main() {
   test('stabilizationSeconds 설정값을 실제로 사용한다(하드코딩된 3초가 아니다)', () async {
     // 잡아야 할 잘못된 구현: config.stabilizationSeconds를 무시하고 3초를
     // 하드코딩한다.
-    const customConfig = BeaconScanConfig(uuid: _uuid, rssiThreshold: -70, stabilizationSeconds: 5);
+    final customConfig = BeaconScanConfig(uuid: _uuid, rssiThreshold: -70, stabilizationSeconds: 5);
     final h = _Harness();
     await h.start(customConfig);
 
@@ -573,7 +573,7 @@ void main() {
     await h.start(config); // uuid = _uuid
     expect(h.lastRegions!.single.proximityUUID, _uuid);
 
-    const config2 = BeaconScanConfig(uuid: _otherUuid, rssiThreshold: -70, stabilizationSeconds: 3);
+    final config2 = BeaconScanConfig(uuid: _otherUuid, rssiThreshold: -70, stabilizationSeconds: 3);
     await h.start(config2); // 같은 스캐너 인스턴스에 두 번째 watch()
 
     expect(h.lastRegions!.single.proximityUUID, _otherUuid);

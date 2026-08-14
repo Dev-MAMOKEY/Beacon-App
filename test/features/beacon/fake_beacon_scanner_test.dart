@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// 대체하고, `stop()` 이후에는 아무것도 방출하지 않는다)을 지키지 못하면,
 /// 그 계약을 어기는 화면 쪽 버그를 이 더블에 의존하는 어떤 테스트도 잡지
 /// 못한다.
-const _config = BeaconScanConfig(uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0');
+final _config = BeaconScanConfig(uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0');
 
 void main() {
   test('두 번째 watch()가 이전 스트림을 대체한다 — 이전 구독자는 더는 이벤트를 받지 않는다', () async {
