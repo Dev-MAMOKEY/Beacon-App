@@ -43,7 +43,8 @@ class _Harness {
   _Harness({
     beacon_lib.BluetoothState initialBluetoothState = beacon_lib.BluetoothState.stateOn,
     bool initializeSucceeds = true,
-    beacon_lib.AuthorizationStatus authorization = beacon_lib.AuthorizationStatus.allowed,
+    this.authorization = beacon_lib.AuthorizationStatus.allowed,
+    this.authorizationAfterRequest,
     DateTime? startAt,
   }) : clock = _FakeClock(startAt ?? DateTime(2026, 8, 14)) {
     scanner = FlutterBeaconScanner(
@@ -58,9 +59,21 @@ class _Harness {
       currentBluetoothState: () async => initialBluetoothState,
       initializeAndCheckScanning: () async => initializeSucceeds,
       authorizationStatus: () async => authorization,
+      requestAuthorization: () async {
+        requestAuthorizationCallCount++;
+        if (authorizationAfterRequest != null) {
+          authorization = authorizationAfterRequest!;
+        }
+        return true;
+      },
       now: clock.call,
     );
   }
+
+  /// 현재 권한 상태. `requestAuthorization`이 불리면 [authorizationAfterRequest]로
+  /// 바뀐다 — "요청 후 사용자가 승인/거부했다"를 흉내낸다.
+  beacon_lib.AuthorizationStatus authorization;
+  final beacon_lib.AuthorizationStatus? authorizationAfterRequest;
 
   final _FakeClock clock;
   late final FlutterBeaconScanner scanner;
@@ -69,6 +82,7 @@ class _Harness {
   List<beacon_lib.Region>? lastRegions;
   int rangingStarts = 0;
   int rangingCancelCount = 0;
+  int requestAuthorizationCallCount = 0;
   final List<BeaconScanState> states = [];
 
   StreamController<beacon_lib.RangingResult> get currentRanging => rangingControllers.last;
@@ -262,5 +276,80 @@ void main() {
 
     expect(h.lastRegions, hasLength(1));
     expect(h.lastRegions!.single.proximityUUID, _uuid);
+  });
+
+  group('권한 요청 — notDetermined을 거부로 단정하지 않는다', () {
+    // notDetermined("아직 물어본 적 없음")를 denied로 잘못 취급하면, 사용자는
+    // 팝업을 본 적도 없는데 영원히 권한 거부 화면에 갇힌다. 아래 5개는 이
+    // 판정 경로 전체를 고정한다.
+
+    test('notDetermined이면 요청을 정확히 한 번 호출하고 상태를 다시 읽는다', () async {
+      // 잡아야 할 잘못된 구현: 요청 없이 바로 PermissionDenied를 방출한다(수정 전 동작).
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.notDetermined,
+        authorizationAfterRequest: beacon_lib.AuthorizationStatus.notDetermined,
+      );
+      await h.start(config);
+
+      expect(h.requestAuthorizationCallCount, 1);
+      // 재요청 후에도 여전히 notDetermined(=거부로 볼 수밖에 없음)면
+      // PermissionDenied로 마무리되어야 "다시 읽었다"는 것이 증명된다.
+      expect(h.states.last, isA<BeaconPermissionDenied>());
+    });
+
+    test('notDetermined에서 요청 후 승인되면 BeaconScanning으로 전이하고 ranging을 시작한다', () async {
+      // 잡아야 할 잘못된 구현: 방금 승인됐는데도 PermissionDenied를 방출한다.
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.notDetermined,
+        authorizationAfterRequest: beacon_lib.AuthorizationStatus.allowed,
+      );
+      await h.start(config);
+
+      expect(h.states.last, isA<BeaconScanning>());
+      expect(h.rangingStarts, 1);
+    });
+
+    test('notDetermined에서 요청 후에도 거부면 BeaconPermissionDenied를 방출한다', () async {
+      // 잡아야 할 잘못된 구현: 요청 후 상태를 다시 확인하지 않고 무조건 스캔을 진행한다.
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.notDetermined,
+        authorizationAfterRequest: beacon_lib.AuthorizationStatus.denied,
+      );
+      await h.start(config);
+
+      expect(h.states.last, isA<BeaconPermissionDenied>());
+      expect(h.rangingStarts, 0, reason: '권한이 없는 채로 ranging을 시작하면 안 된다');
+    });
+
+    test('이미 denied면 즉시 PermissionDenied를 방출하고 요청은 부르지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 상태와 무관하게 스캔을 시작할 때마다 요청을 부른다.
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.denied,
+      );
+      await h.start(config);
+
+      expect(h.states.last, isA<BeaconPermissionDenied>());
+      expect(
+        h.requestAuthorizationCallCount,
+        0,
+        reason: '이미 거부된 상태에서 다시 요청하는 것은 OS가 무시하는 무의미한 호출이다',
+      );
+    });
+
+    test('이미 승인된 상태면 요청을 부르지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 정상 경로에서도 불필요하게 요청을 부른다.
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.allowed,
+      );
+      await h.start(config);
+
+      expect(h.requestAuthorizationCallCount, 0);
+      expect(h.states.last, isA<BeaconScanning>());
+    });
   });
 }

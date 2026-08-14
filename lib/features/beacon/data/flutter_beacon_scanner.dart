@@ -31,6 +31,7 @@ class FlutterBeaconScanner implements BeaconScanner {
     Future<beacon_lib.BluetoothState> Function()? currentBluetoothState,
     Future<bool> Function()? initializeAndCheckScanning,
     Future<beacon_lib.AuthorizationStatus> Function()? authorizationStatus,
+    Future<bool> Function()? requestAuthorization,
     DateTime Function()? now,
   })  : _rangingStreamFactory = rangingStreamFactory ?? beacon_lib.flutterBeacon.ranging,
         _bluetoothStateStreamFactory = bluetoothStateStreamFactory ?? beacon_lib.flutterBeacon.bluetoothStateChanged,
@@ -38,6 +39,7 @@ class FlutterBeaconScanner implements BeaconScanner {
         _initializeAndCheckScanning =
             initializeAndCheckScanning ?? (() => beacon_lib.flutterBeacon.initializeAndCheckScanning),
         _authorizationStatus = authorizationStatus ?? (() => beacon_lib.flutterBeacon.authorizationStatus),
+        _requestAuthorization = requestAuthorization ?? (() => beacon_lib.flutterBeacon.requestAuthorization),
         _now = now ?? DateTime.now;
 
   final Stream<beacon_lib.RangingResult> Function(List<beacon_lib.Region> regions) _rangingStreamFactory;
@@ -45,6 +47,7 @@ class FlutterBeaconScanner implements BeaconScanner {
   final Future<beacon_lib.BluetoothState> Function() _currentBluetoothState;
   final Future<bool> Function() _initializeAndCheckScanning;
   final Future<beacon_lib.AuthorizationStatus> Function() _authorizationStatus;
+  final Future<bool> Function() _requestAuthorization;
   final DateTime Function() _now;
 
   StreamController<BeaconScanState>? _controller;
@@ -134,6 +137,27 @@ class FlutterBeaconScanner implements BeaconScanner {
         status = beacon_lib.AuthorizationStatus.denied;
       }
       if (controller.isClosed) return;
+
+      // `notDetermined`는 "거부됨"이 아니라 "아직 물어본 적이 없음"이다 —
+      // 이 상태를 바로 거부로 단정하면 사용자는 팝업을 본 적도 없는데
+      // 영원히 권한 거부 화면에 갇힌다. 이미 denied/restricted인 상태에서
+      // 다시 요청하는 것은 OS가 무시하는 무의미한 호출이므로 notDetermined
+      // 일 때만 요청한다.
+      if (status == beacon_lib.AuthorizationStatus.notDetermined) {
+        try {
+          await _requestAuthorization();
+        } catch (_) {
+          // 요청 자체가 실패해도 아래에서 상태를 다시 읽어 최종 판정한다.
+        }
+        if (controller.isClosed) return;
+        try {
+          status = await _authorizationStatus();
+        } catch (_) {
+          status = beacon_lib.AuthorizationStatus.denied;
+        }
+        if (controller.isClosed) return;
+      }
+
       if (!_isAuthorizationGranted(status)) {
         controller.add(const BeaconPermissionDenied());
         return;
