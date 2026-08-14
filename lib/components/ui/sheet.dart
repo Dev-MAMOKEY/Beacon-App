@@ -2,8 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 
-/// 프로젝트 공용 바텀시트 프리미티브. 이 화면(#11, 출석 완료 표시)이 처음
-/// 만들고, #12(기록 캘린더의 날짜 상세)가 그대로 재사용한다.
+/// 프로젝트 공용 바텀시트 프리미티브.
+///
+/// #11(출석 완료 표시)이 이 파일을 만들었지만, 그 화면은 최종적으로 Figma
+/// `339:1705`("출석완료 팝업창" — 화면 중앙 카드)를 따르기로 하면서
+/// `lib/components/ui/popup.dart` 쪽으로 옮겨 갔다. 그래서 **이 파일의 첫
+/// 실사용처는 #12(기록 캘린더의 날짜 상세)다** — "출석 완료 시트가 쓰고
+/// 있다"는 설명은 낡았다(`git grep showAppSheet`로 확인했다).
 ///
 /// `showModalBottomSheet`를 얇게 감싸기만 한다 — 배경색·모서리 반경·핸들
 /// 인디케이터처럼 화면마다 반복될 장식만 여기서 표준화하고, 내용은 전부
@@ -14,19 +19,61 @@ Future<T?> showAppSheet<T>({
   bool isDismissible = true,
   bool enableDrag = true,
 }) {
+  final navigator = appSheetNavigatorOf(context);
+  return navigator.push<T>(
+    buildAppSheetRoute<T>(
+      context: context,
+      navigator: navigator,
+      builder: builder,
+      isDismissible: isDismissible,
+      enableDrag: enableDrag,
+    ),
+  );
+}
+
+/// 바텀시트도 팝업과 같은 이유로 **루트** 내비게이터에 붙어야 한다 —
+/// 중첩 내비게이터(하단 탭 셸 안)에 붙으면 스크림이 상단 바·하단 탭 바를
+/// 덮지 못하고 탭이 그대로 눌린다(`popup.dart`의 `appPopupNavigatorOf` 주석
+/// 참고 — 그 버그가 실제로 있었다).
+NavigatorState appSheetNavigatorOf(BuildContext context) =>
+    Navigator.of(context, rootNavigator: true);
+
+/// [AppSheet]를 담은 바텀시트 **라우트**를 만든다(push는 하지 않는다).
+///
+/// [showAppSheet]가 아니라 이 함수가 필요한 이유는 `popup.dart`의
+/// [buildAppPopupRoute]와 같다 — 화면이 자기가 띄운 시트를 **정체성으로**
+/// 닫아야 하는 경우가 있다. 기록 화면은 탭이 숨겨지거나(`StatefulShellRoute.
+/// indexedStack`은 브랜치를 dispose하지 않는다) 화면이 트리에서 빠질 때 자기
+/// 시트를 닫아야 하는데, `showModalBottomSheet`는 `Future`만 돌려주고 자기가
+/// 만든 `Route`는 감춘다. 그러면 남는 닫기 수단이 `Navigator.pop()`(=스택 맨
+/// 위)뿐이라 엉뚱한 라우트를 닫을 수 있다.
+ModalBottomSheetRoute<T> buildAppSheetRoute<T>({
+  required BuildContext context,
+  required NavigatorState navigator,
+  required WidgetBuilder builder,
+  bool isDismissible = true,
+  bool enableDrag = true,
+}) {
   final colors = Theme.of(context).extension<AppColors>()!;
 
-  return showModalBottomSheet<T>(
-    context: context,
+  return ModalBottomSheetRoute<T>(
+    isScrollControlled: false,
     isDismissible: isDismissible,
     enableDrag: enableDrag,
     backgroundColor: colors.white,
+    // 스크림도 색이다 — `lib/core/theme/` 밖에서 `Colors.black`을 직접 쓰지
+    // 않는다(`AppColors.scrim`). `showModalBottomSheet`의 기본값은 하드코딩된
+    // `Colors.black54`라 이 지정이 없으면 팝업과 스크림 농도가 달라진다.
+    modalBarrierColor: colors.scrim,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.only(
         topLeft: Radius.circular(24),
         topRight: Radius.circular(24),
       ),
     ),
+    // 호출자 컨텍스트의 InheritedTheme(테마와 그 확장 포함)을 루트
+    // 내비게이터 아래로 옮겨 담는다 — `showModalBottomSheet`가 하는 것과 같다.
+    capturedThemes: InheritedTheme.capture(from: context, to: navigator.context),
     builder: (context) => AppSheet(child: Builder(builder: builder)),
   );
 }
