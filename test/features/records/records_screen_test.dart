@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:beacon_app/components/ui/sheet.dart';
 import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
 import 'package:beacon_app/core/theme/app_typography.dart';
@@ -1157,6 +1158,15 @@ void main() {
     expect(find.text('19:07 처리'), findsOneWidget);
     // 다른 날짜의 세션이 섞여 들어오지 않는다.
     expect(find.text('다른 날 세션'), findsNothing);
+
+    // 긴 내용을 위해 `isScrollControlled: true`로 바꾼 뒤에도 **짧은 시트는
+    // 내용 높이에 맞아야** 한다 — 세션 둘짜리가 화면을 다 덮으면 회귀다.
+    final screenHeight = tester.view.physicalSize.height / tester.view.devicePixelRatio;
+    expect(
+      tester.getTopLeft(find.byType(AppSheet)).dy,
+      greaterThan(screenHeight / 2),
+      reason: '짧은 시트가 화면 절반 위로 올라오면 내용 높이에 맞지 않은 것이다',
+    );
   });
 
   testWidgets('기록이 없는 날짜를 탭하면 시트가 뜨지 않고 라우트도 쌓이지 않는다', (tester) async {
