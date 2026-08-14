@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../components/ui/app_logo.dart';
 import '../../../components/ui/button.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
@@ -35,10 +36,7 @@ class SplashScreen extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'Beacon',
-                style: typography.title3.copyWith(color: colors.main),
-              ),
+              const AppLogo(height: 24),
               const SizedBox(height: 12),
               Text(
                 serviceName,

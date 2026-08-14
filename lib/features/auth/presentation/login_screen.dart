@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../components/ui/app_logo.dart';
 import '../../../components/ui/button.dart';
 import '../../../components/ui/input.dart';
 import '../../../core/network/api_exception.dart';
@@ -88,7 +89,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 48),
-              Text('Beacon', style: typography.title3.copyWith(color: colors.main)),
+              const Align(alignment: Alignment.centerLeft, child: AppLogo(height: 24)),
               const SizedBox(height: 40),
               AppInput(
                 controller: _stdId,
