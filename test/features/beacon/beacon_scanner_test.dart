@@ -579,6 +579,44 @@ void main() {
     expect(h.lastRegions!.single.proximityUUID, _otherUuid);
   });
 
+  // 홈 탭이 숨겨지면 스캔을 멈추고, 다시 보이면 `watch()`를 다시 부른다
+  // (`home_screen.dart`). 그때 "탭을 잠깐 떠났다 돌아왔다"는 이유로 이미
+  // 채워둔 안정화 시간이 그대로 인정되면, 실제로는 방을 나갔다 들어온
+  // 사용자가 곧바로 출석 대상이 된다 — 재구독은 반드시 스트릭을 0에서
+  // 다시 세야 한다.
+  test('stop() 후 watch()를 다시 부르면 안정화 스트릭이 0에서 다시 쌓인다', () async {
+    // 잡아야 할 잘못된 구현: 스트릭 상태(streakStart/lastGoodSampleAt)나
+    // 경과 시계를 세션이 아니라 스캐너 인스턴스에 두어, 재구독 후 첫
+    // 좋은 프레임 하나만으로 곧장 Detected가 나온다.
+    final h = _Harness();
+    await h.start(config);
+    h.emitGood(-60);
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3));
+    expect(h.states.last, isA<BeaconDetected>());
+
+    await h.scanner.stop();
+
+    final resumed = <BeaconScanState>[];
+    h.scanner.watch(config).listen(resumed.add);
+    await pumpEventQueue();
+
+    // 재개 직후의 좋은 프레임 하나 — 안정화 시간을 다시 채우기 전이다.
+    h.emitGood(-60);
+    await h.settle();
+
+    expect(
+      resumed.whereType<BeaconDetected>(),
+      isEmpty,
+      reason: '재구독은 새 세션이므로 스트릭도 시계도 0에서 시작해야 한다',
+    );
+
+    // 그리고 안정화 시간을 다시 채우면 그때는 Detected가 나온다 —
+    // "영원히 안 나온다"가 아니라 "처음부터 다시 센다"임을 함께 고정한다.
+    await h.holdGoodFor(const Duration(seconds: 3));
+    expect(resumed.last, isA<BeaconDetected>());
+  });
+
   test('stop()은 실제 구독 취소가 끝날 때까지 기다린다', () async {
     // 잡아야 할 잘못된 구현: cancel() Future들을 기다리지 않고 stop()이
     // 먼저 반환돼 버린다.
