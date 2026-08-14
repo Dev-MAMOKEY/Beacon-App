@@ -200,10 +200,18 @@ void main() {
     expect(colors.attendancePresent, const Color(0xFF91CAFF));
     expect(colors.attendanceLate, const Color(0xFFFDD97C));
     expect(colors.attendanceAbsent, const Color(0xFFFF9797));
-    // "기타"는 Figma에 variant가 없다 — 사용자 판정으로 gray4와 같은 값을
-    // 쓴다. 같은 값이라는 사실 자체를 고정해 둔다.
+    // "기타"는 Figma에 variant가 없다 — 사용자 판정으로 지금은 gray4와 같은
+    // 값을 쓴다. **못박는 것은 그 값이지 "gray4와 같다"는 관계가 아니다.**
+    //
+    // 예전에는 `expect(colors.attendanceEtc, colors.gray4)`가 함께 있었는데,
+    // 그건 두 토큰이 영원히 같이 움직여야 한다는 뜻이 되어 이 토큰을 따로 둔
+    // 이유(의미가 다르므로 Figma가 "기타" variant를 정의하면 여기만 바뀐다)와
+    // 정면으로 어긋났다. 게다가 두 값이 같다는 사실이 위젯 층의 실명을
+    // 영구화했다 — `records_calendar.dart`가 `etc`를 `gray4`로 칠해도
+    // 위젯 테스트가 눈치채지 못했다(리뷰 Important 6). 그 실명은
+    // `records_screen_test.dart`가 attendanceEtc만 다른 값으로 덮어쓴 테마로
+    // pump해 따로 잡는다.
     expect(colors.attendanceEtc, const Color(0xFFE7E8E9));
-    expect(colors.attendanceEtc, colors.gray4);
   });
 
   // `lerp`는 생성자 인자가 전부 required라 필드를 "빠뜨릴" 수는 없다
