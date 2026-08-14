@@ -37,10 +37,15 @@ enum AppTab { home, records, admin, profile }
 /// (이슈 #34 결정 사항)
 final showAdminTabProvider = Provider<bool>((ref) => false);
 
-/// `SessionReady` 상태에서 허용하는 위치 집합. 이전에는 `/home` 단일
-/// 타겟이라 하단 탭을 넣으면 첫 탭 외 모든 탭에서 튕겨 나왔다 — 이 집합
-/// 밖에 있을 때만 `/home`으로 되돌린다.
-const Set<String> _readyAllowedLocations = {
+/// `SessionReady` 상태에서 허용하는 위치 집합 — 하단 탭 셸에 실제로
+/// 등록된 5개 경로(탭 4개 + `/profile/password`)와 정확히 일치해야 한다.
+/// `app_router_widget_test.dart`가 실제 라우트 트리를 순회해 이 집합과
+/// 비교한다 — 탭을 추가하고 이 집합 갱신을 잊으면 그 테스트가 실패한다.
+/// `@visibleForTesting`으로 공개하는 이유도 그 비교를 가능하게 하기
+/// 위해서다(라이브러리 단위 private라 테스트 파일에서는 애초에 접근할
+/// 수 없다).
+@visibleForTesting
+const Set<String> readyAllowedLocations = {
   AppRoutes.home,
   AppRoutes.records,
   AppRoutes.admin,
@@ -54,6 +59,19 @@ const Set<String> _readyAllowedLocations = {
 /// 바로 보여줘야 하므로 이 지연을 적용하지 않는다.
 const Duration minSplashDuration = Duration(milliseconds: 1500);
 
+/// `SessionReady`의 목적지를 고른다. 관리자 탭은 `showAdmin`이 false인
+/// 동안 `/admin` 자체를 허용 집합에서 빠진 것처럼 취급한다 — 가드를
+/// `computeRedirect` 밖(예: GoRouter의 `redirect:` 클로저)에 따로 두면
+/// `computeRedirect`를 직접 부르는 단위 테스트가 그 가드를 전혀 보지
+/// 못한다. 가드 줄을 통째로 지워도 그 단위 테스트들은 계속 초록색일
+/// 것이고, 실제로 그런 일이 있었다.
+String _readyTarget({required String matchedLocation, required bool showAdmin}) {
+  if (matchedLocation == AppRoutes.admin && !showAdmin) {
+    return AppRoutes.home;
+  }
+  return readyAllowedLocations.contains(matchedLocation) ? matchedLocation : AppRoutes.home;
+}
+
 /// GoRouterState/BuildContext 없이 단위 테스트할 수 있도록 뽑아낸 순수
 /// redirect 결정 함수.
 @visibleForTesting
@@ -62,6 +80,7 @@ String? computeRedirect({
   required String matchedLocation,
   required DateTime launchedAt,
   required DateTime now,
+  required bool showAdmin,
 }) {
   // AsyncError는 이전 값이 남아있어도(hasValue == true) 판별이 실패했다는
   // 뜻이다 — requireValue로 낡은 값을 읽어 그쪽으로 리다이렉트하면 안 된다.
@@ -89,24 +108,19 @@ String? computeRedirect({
     return null;
   }
 
-  if (value is SessionSignedOut) {
-    return matchedLocation == AppRoutes.login ? null : AppRoutes.login;
-  }
+  // 봉인된(sealed) SessionState 위의 exhaustive switch — 상태가 하나
+  // 늘어나면 이 switch가 컴파일 타임에 누락을 알려준다. if-체인 +
+  // "나머지는 SessionUnavailable" 주석으로 바꾸면 그 보장이 조용히
+  // 사라지고, 다섯 번째 상태가 추가돼도 컴파일은 되면서 스플래시로 조용히
+  // 새는 버그가 생긴다.
+  final target = switch (value) {
+    SessionSignedOut() => AppRoutes.login,
+    SessionNeedsClub() => AppRoutes.invite,
+    SessionReady() => _readyTarget(matchedLocation: matchedLocation, showAdmin: showAdmin),
+    SessionUnavailable() => AppRoutes.splash,
+  };
 
-  if (value is SessionNeedsClub) {
-    return matchedLocation == AppRoutes.invite ? null : AppRoutes.invite;
-  }
-
-  if (value is SessionReady) {
-    // 예전엔 /home 단일 타겟이라 하단 탭 중 첫 탭 외에는 전부 튕겨
-    // 나왔다. 허용 위치 집합 밖일 때만 /home으로 보낸다 — 집합 안이면
-    // 어떤 탭에 있든 그대로 둔다.
-    return _readyAllowedLocations.contains(matchedLocation) ? null : AppRoutes.home;
-  }
-
-  // 남은 경우는 SessionUnavailable뿐이다 — 실패는 스플래시 자신에
-  // 머무르며 재시도 UI를 보여준다.
-  return matchedLocation == AppRoutes.splash ? null : AppRoutes.splash;
+  return matchedLocation == target ? null : target;
 }
 
 /// go_router가 Riverpod 상태 변화를 구독하게 하는 어댑터. 앱이 생성된
@@ -164,17 +178,21 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // 각 자리표시자는 해당 태스크에서 실제 화면으로 교체된다.
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) {
-          return AppShell(
-            navigationShell: navigationShell,
-            showAdmin: ref.read(showAdminTabProvider),
-          );
+          // state.matchedLocation이 아니라 state.uri다 — go_router가
+          // context.push()/router.push()로 넣은 임시(Imperative) 매치는
+          // ShellRouteMatch.matchedLocation(셸 자신의 선언적 매치 위치,
+          // 예: '/profile')을 갱신하지 않고 uri/fullPath/pathParameters만
+          // 갱신한다. matchedLocation을 쓰면 /profile/password로 push한
+          // 뒤에도 이 값이 '/profile'에 멈춰 있다 — 직접 go_router 소스
+          // (match.dart의 ShellRouteMatch.buildState)로 확인했다.
+          return AppShell(navigationShell: navigationShell, currentLocation: state.uri.toString());
         },
         branches: [
           StatefulShellBranch(
             routes: [
               GoRoute(
                 path: AppRoutes.home,
-                builder: (context, state) => const _HomePlaceholder(),
+                builder: (context, state) => const _Placeholder(message: '홈 화면은 #11에서 구현합니다'),
               ),
             ],
           ),
@@ -190,7 +208,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: AppRoutes.admin,
-                builder: (context, state) => const _AdminPlaceholder(),
+                builder: (context, state) =>
+                    const _Placeholder(message: '관리자 화면은 Phase 3에서 구현합니다'),
               ),
             ],
           ),
@@ -198,14 +217,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: AppRoutes.profile,
-                builder: (context, state) => const _ProfilePlaceholder(),
+                builder: (context, state) => const _Placeholder(message: '마이페이지는 #13에서 구현합니다'),
                 routes: [
                   GoRoute(
                     // 부모 경로(`/profile`)에 상대적이라 최종 경로는
                     // AppRoutes.passwordChange('/profile/password')와
                     // 일치한다.
                     path: 'password',
-                    builder: (context, state) => const _PasswordChangePlaceholder(),
+                    builder: (context, state) =>
+                        const _Placeholder(message: '비밀번호 변경은 #13에서 구현합니다'),
                   ),
                 ],
               ),
@@ -215,21 +235,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
     ],
     redirect: (context, state) {
-      final sessionRedirect = computeRedirect(
+      return computeRedirect(
         session: ref.read(sessionControllerProvider),
         matchedLocation: state.matchedLocation,
         launchedAt: listenable.launchedAt,
         now: DateTime.now(),
+        showAdmin: ref.read(showAdminTabProvider),
       );
-      if (sessionRedirect != null) return sessionRedirect;
-
-      // 관리자 탭은 Phase 3에서 role을 실제로 조회하기 전까지 항상
-      // 차단한다 — 위 `showAdminTabProvider` 설명 참고.
-      if (!ref.read(showAdminTabProvider) && state.matchedLocation == AppRoutes.admin) {
-        return AppRoutes.home;
-      }
-
-      return null;
     },
   );
   ref.onDispose(router.dispose);
@@ -237,16 +249,21 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   return router;
 });
 
-/// #11에서 실제 홈 화면으로 교체된다.
-class _HomePlaceholder extends StatelessWidget {
-  const _HomePlaceholder();
+/// 자리표시자 4종(홈/관리자/마이/비밀번호 변경)이 메시지만 다르고 구조가
+/// 완전히 같아 하나로 합쳤다. `_RecordsPlaceholder`만 별도로 남아 있다 —
+/// 탭 전환 시 스크롤 위치가 보존되는지 테스트가 확인하려면 스크롤 가능한
+/// 콘텐츠가 필요하기 때문이다(app_router_widget_test.dart).
+class _Placeholder extends StatelessWidget {
+  const _Placeholder({required this.message});
+
+  final String message;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
     return ColoredBox(
       color: colors.bg,
-      child: const Center(child: Text('홈 화면은 #11에서 구현합니다')),
+      child: Center(child: Text(message)),
     );
   }
 }
@@ -272,49 +289,6 @@ class _RecordsPlaceholder extends StatelessWidget {
             SizedBox(height: 80, child: Center(child: Text('placeholder-$i'))),
         ],
       ),
-    );
-  }
-}
-
-/// 관리자 화면들(#16/#17/#18)이 생기는 Phase 3에서 교체된다. 이 탭은
-/// `showAdmin`이 false인 동안 노출되지도, 진입되지도 않는다.
-class _AdminPlaceholder extends StatelessWidget {
-  const _AdminPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: const Center(child: Text('관리자 화면은 Phase 3에서 구현합니다')),
-    );
-  }
-}
-
-/// #13에서 실제 마이페이지 화면으로 교체된다.
-class _ProfilePlaceholder extends StatelessWidget {
-  const _ProfilePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: const Center(child: Text('마이페이지는 #13에서 구현합니다')),
-    );
-  }
-}
-
-/// #13에서 실제 비밀번호 변경 화면으로 교체된다.
-class _PasswordChangePlaceholder extends StatelessWidget {
-  const _PasswordChangePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: const Center(child: Text('비밀번호 변경은 #13에서 구현합니다')),
     );
   }
 }

@@ -188,6 +188,12 @@ void main() {
     router.push(AppRoutes.passwordChange);
     await tester.pumpAndSettle();
     expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
+    // 상단 바 제목도 현재 위치(=/profile/password)를 따라가야 한다.
+    // navigationShell.currentIndex는 브랜치 전환 때만 바뀌므로(같은 마이
+    // 브랜치 안에서 한 단계 더 들어간 것뿐이라 3 그대로), 제목을
+    // currentIndex로 뽑으면 이 화면에서도 "마이페이지"가 그대로 남는다.
+    expect(find.text('비밀번호 변경'), findsOneWidget);
+    expect(find.text('마이페이지'), findsNothing);
 
     // 홈 탭으로 전환했다가...
     await tester.tap(find.text('홈'));
@@ -219,5 +225,46 @@ void main() {
 
     expect(find.text('홈 화면은 #11에서 구현합니다'), findsOneWidget);
     expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
+  });
+
+  // readyAllowedLocations는 아무것도 라우트 트리와 구조적으로 묶어 두지
+  // 않는다 — 탭을 추가하고 이 집합 갱신을 잊으면, 콜드 스타트 딥링크가
+  // 조용히 /home으로 튕긴다. 이 테스트는 실제 라우트 트리를 순회해 등록된
+  // 모든 GoRoute 경로를 모으고, 셸에 속하지 않는 4개(스플래시/로그인/
+  // 회원가입/초대코드 — SessionReady의 허용 집합이 아니다)를 뺀 나머지가
+  // readyAllowedLocations와 정확히 같은지 확인한다.
+  test('readyAllowedLocations가 셸에 실제로 등록된 GoRoute 경로와 정확히 일치한다', () {
+    final container = ProviderContainer(
+      overrides: [
+        tokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(const [])),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final router = container.read(appRouterProvider);
+
+    final registered = <String>{};
+    void walk(List<RouteBase> routes) {
+      for (final route in routes) {
+        if (route is GoRoute) {
+          final path = router.configuration.locationForRoute(route);
+          if (path != null) registered.add(path);
+        }
+        walk(route.routes);
+      }
+    }
+
+    walk(router.configuration.routes);
+
+    const nonShellRoutes = {
+      AppRoutes.splash,
+      AppRoutes.login,
+      AppRoutes.signup,
+      AppRoutes.invite,
+    };
+    final shellRegistered = registered.difference(nonShellRoutes);
+
+    expect(shellRegistered, readyAllowedLocations);
   });
 }

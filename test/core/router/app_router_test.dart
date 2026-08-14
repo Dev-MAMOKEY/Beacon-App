@@ -27,12 +27,16 @@ void main() {
     required AsyncValue<SessionState> session,
     required String matchedLocation,
     DateTime? now,
+    // 프로덕션 기본값(showAdminTabProvider)과 맞춘다 — 이 값이 결과에
+    // 영향을 주는 시나리오만 명시적으로 override한다.
+    bool showAdmin = false,
   }) {
     return computeRedirect(
       session: session,
       matchedLocation: matchedLocation,
       launchedAt: launchedAt,
       now: now ?? afterMinDuration,
+      showAdmin: showAdmin,
     );
   }
 
@@ -199,6 +203,29 @@ void main() {
         matchedLocation: AppRoutes.records,
       );
       expect(result, AppRoutes.login);
+    });
+  });
+
+  // 관리자 가드가 GoRouter의 redirect: 클로저가 아니라 computeRedirect
+  // 자체 안에 있는지 고정한다 — 밖에 있으면 이 group의 두 테스트는 가드가
+  // 통째로 사라져도 여전히 초록색이다(가드를 별도로 두고 지워봤을 때
+  // 실제로 그랬다 — 아래 각 테스트에 판별 결과를 남겼다).
+  group('관리자 라우트 가드', () {
+    test('showAdmin이 false면 /admin을 /home으로 되돌린다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+        matchedLocation: AppRoutes.admin,
+      );
+      expect(result, AppRoutes.home);
+    });
+
+    test('showAdmin이 true면 /admin에 머무른다', () {
+      final result = redirect(
+        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+        matchedLocation: AppRoutes.admin,
+        showAdmin: true,
+      );
+      expect(result, isNull);
     });
   });
 }

@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
+import '../ui/app_logo.dart';
 
 /// 상단 바(`340:1923`). 좌: Beacon 로고, 중앙: 화면 제목/사용자 이름
 /// (`18px gray3` — `AppTypography.body1`이 정확히 18px이라 그대로 쓴다),
-/// 우: 알림 아이콘 24×24.
+/// 우: 알림 아이콘 24×24(`assets/icons/notification.svg`, Figma
+/// `notification-2-line`).
 ///
-/// Figma가 내보낸 실제 로고·아이콘 SVG를 이 태스크에서 구하지 못했다 —
-/// 접근 가능한 Figma 파일 URL/키를 찾지 못했고, 손으로 벡터를 그리거나
-/// 비슷한 아이콘으로 대체하지 않기로 했다(지침). 로고 자리는 스플래시
-/// 화면과 동일하게 "Beacon" 텍스트 워드마크로, 알림 아이콘 자리는 24×24
-/// 빈 자리로 채워 레이아웃만 맞춰 두고, 실제 에셋이 확보되면 교체한다.
+/// `AppBar`를 쓰지 않는다 — 이 프로젝트는 Phase 1부터 UI 프리미티브를
+/// 직접 소유하는 방식(shadcn류)을 유지해 왔고, 이 레이아웃은 Material의
+/// AppBar 테마링과 맞지 않는 로고·이름·종 아이콘 3분할 구조라 커스텀
+/// 위젯이 더 맞는다.
 class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
   const AppTopBar({super.key, this.title});
 
@@ -38,18 +40,26 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
               children: [
-                Text('Beacon', style: typography.title6.copyWith(color: colors.main)),
+                const AppLogo(),
                 Expanded(
                   child: Center(
                     child: title == null
                         ? null
                         : Text(
                             title!,
+                            // 이 자리는 화면 제목뿐 아니라 사용자 이름도
+                            // 들어온다(홈 화면) — maxLines/overflow 없이
+                            // 두면 예외 없이 이 바의 높이(56)까지 조용히
+                            // 늘어난다(RenderFlex는 Row의 교차축 오버플로를
+                            // 경고하지 않는다 — 직접 확인했다). 한 줄로
+                            // 자른다.
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: typography.body1.copyWith(color: colors.gray3),
                           ),
                   ),
                 ),
-                const SizedBox(width: 24, height: 24),
+                SvgPicture.asset('assets/icons/notification.svg', width: 24, height: 24),
               ],
             ),
           ),
