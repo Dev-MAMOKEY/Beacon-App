@@ -180,10 +180,13 @@ class _AppOtpInputState extends State<AppOtpInput>
       },
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: List.generate(widget.length, (index) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: SizedBox(
+        children: [
+          for (var index = 0; index < widget.length; index++) ...[
+            // Figma(339:1683)는 칸 사이 간격만 16이고 바깥쪽엔 여백이 없다
+            // — 칸마다 좌우 패딩을 주면 바깥쪽에도 여백이 생겨 버리므로
+            // 칸과 칸 사이에만 구분자를 끼워 넣는다.
+            if (index > 0) const SizedBox(width: 16),
+            SizedBox(
               width: 56,
               height: 64,
               child: Semantics(
@@ -196,17 +199,31 @@ class _AppOtpInputState extends State<AppOtpInput>
                   textAlign: TextAlign.center,
                   keyboardType: TextInputType.number,
                   maxLength: 1,
+                  // Figma는 이 자리 숫자를 Inter Bold로 그렸지만 Inter는
+                  // AppTypography 토큰에도, 번들 폰트에도 없다 — 새 폰트를
+                  // 추가하는 대신(자산 없이는 하드코딩과 다를 바 없다)
+                  // 가장 가까운 기존 토큰(title3, Pretendard SemiBold
+                  // 24px)으로 대체했다. 리포트에 플래그.
                   style: typography.title3.copyWith(color: colors.gray3),
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   decoration: InputDecoration(
                     counterText: '',
                     filled: true,
-                    fillColor: colors.white,
+                    // Figma는 칸을 gray4로 채우고 테두리가 없다(흰 배경 +
+                    // 테두리였던 이전 구현과 다르다).
+                    fillColor: colors.gray4,
+                    // 빈 칸에 가운뎃점(·) 플레이스홀더를 보여준다(Figma
+                    // 실측) — 값이 있으면 Flutter가 자동으로 숨긴다.
+                    hintText: '·',
+                    hintStyle: typography.title3.copyWith(color: colors.gray2),
                     contentPadding: EdgeInsets.zero,
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: colors.gray4),
+                      borderSide: BorderSide.none,
                     ),
+                    // 정적 목업엔 포커스 상태가 없으므로 Figma가 보여주지
+                    // 않지만, 키보드 사용자를 위한 최소한의 포커스
+                    // 표시로 유지한다.
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: colors.main, width: 2),
@@ -216,8 +233,8 @@ class _AppOtpInputState extends State<AppOtpInput>
                 ),
               ),
             ),
-          );
-        }),
+          ],
+        ],
       ),
     );
   }

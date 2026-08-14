@@ -10,6 +10,7 @@ class AppCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(20),
     this.background,
     this.borderColor,
+    this.borderRadius = radius,
   });
 
   static const double radius = 16;
@@ -19,6 +20,11 @@ class AppCard extends StatelessWidget {
   final Color? background;
   final Color? borderColor;
 
+  /// 카드마다 모서리 반경이 다른 경우(예: 홈 화면 요약 카드는 Figma 실측
+  /// 24) 이 값으로 덮어쓴다. 지정하지 않으면 기존 [radius](16)를 그대로
+  /// 쓴다 — 기존 소비자의 모양은 바뀌지 않는다.
+  final double borderRadius;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
@@ -27,7 +33,7 @@ class AppCard extends StatelessWidget {
       padding: padding,
       decoration: BoxDecoration(
         color: background ?? colors.white,
-        borderRadius: BorderRadius.circular(radius),
+        borderRadius: BorderRadius.circular(borderRadius),
         border: borderColor == null ? null : Border.all(color: borderColor!, width: 2),
       ),
       child: child,

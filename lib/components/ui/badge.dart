@@ -47,14 +47,15 @@ class AppBadge extends StatelessWidget {
 AppBadgeStyle resolveBadgeStyle(BuildContext context, BadgeVariant variant) {
   final colors = Theme.of(context).extension<AppColors>()!;
 
-  // 성공(초록)은 Figma 변수에 없어 main 계열로 대체한다.
-  // 홈 화면(#11)에서 초록을 추출하면 그때 success를 갱신한다.
-  // 경고/위험 배경의 alpha 0.15는 Figma에 배지 배경 토큰이 없어 임시로 정한 값이다 —
-  // 출결상태 컴포넌트가 나오는 이슈에서 실제 값으로 교체한다.
+  // 경고/위험/성공 배경의 alpha 0.15는 Figma에 배지 배경 토큰이 없어 임시로
+  // 정한 값이다 — 출결상태 컴포넌트가 나오는 이슈에서 실제 값으로 교체한다.
   final ({Color background, Color foreground}) palette = switch (variant) {
     BadgeVariant.neutral => (background: colors.gray4, foreground: colors.gray2),
     BadgeVariant.info => (background: colors.bg, foreground: colors.main),
-    BadgeVariant.success => (background: colors.bg, foreground: colors.main),
+    BadgeVariant.success => (
+      background: colors.green.withValues(alpha: 0.15),
+      foreground: colors.green,
+    ),
     BadgeVariant.warning => (
       background: colors.yellow.withValues(alpha: 0.15),
       foreground: colors.yellow,

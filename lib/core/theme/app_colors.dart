@@ -14,6 +14,9 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.gray4,
     required this.yellow,
     required this.red,
+    required this.green,
+    required this.disconnectedGlow,
+    required this.scrim,
     required this.label,
   });
 
@@ -26,6 +29,24 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color gray4;
   final Color yellow;
   final Color red;
+
+  /// 비콘 감지(홈 화면) 동심원과 출석 성공 표시에 쓰는 초록. Figma 변수에는
+  /// 없던 값이라 badge.dart의 success variant는 그동안 `main` 계열로
+  /// 대체해 왔다 — 이 값을 뽑아낸 김에 그쪽도 이 토큰으로 갱신한다.
+  final Color green;
+
+  /// 홈 화면 동심원의 미감지(disconnected) 상태 글로우·내부 원 색.
+  /// Figma 실측 `#94A8BD`(`339:1642`/`326:1587`) — 기존 `AppColors`에
+  /// 없던 값이라 재작업 1차에서는 `gray1`로 임시 대체했었다. 이 값은
+  /// 발명이 아니라 Figma에서 그대로 뽑아낸 값이라 토큰으로 승격한다.
+  final Color disconnectedGlow;
+
+  /// 팝업(다이얼로그) 뒤를 덮는 스크림. Figma 변수에는 없고 팝업 프레임의
+  /// 배경 불투명도(검정 40%)로만 표현돼 있던 값이라 토큰으로 승격한다 —
+  /// `lib/components/ui/popup.dart`가 `Colors.black.withValues(alpha: 0.4)`를
+  /// 직접 쓰던 자리다. 알파 0.4 = 0x66.
+  final Color scrim;
+
   final Color label;
 
   static const AppColors light = AppColors(
@@ -38,6 +59,9 @@ class AppColors extends ThemeExtension<AppColors> {
     gray4: Color(0xFFE7E8E9),
     yellow: Color(0xFFFBBF24),
     red: Color(0xFFFF5D5D),
+    green: Color(0xFF16CE69),
+    disconnectedGlow: Color(0xFF94A8BD),
+    scrim: Color(0x66000000),
     label: Color(0xFF000000),
   );
 
@@ -52,6 +76,9 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? gray4,
     Color? yellow,
     Color? red,
+    Color? green,
+    Color? disconnectedGlow,
+    Color? scrim,
     Color? label,
   }) {
     return AppColors(
@@ -64,6 +91,9 @@ class AppColors extends ThemeExtension<AppColors> {
       gray4: gray4 ?? this.gray4,
       yellow: yellow ?? this.yellow,
       red: red ?? this.red,
+      green: green ?? this.green,
+      disconnectedGlow: disconnectedGlow ?? this.disconnectedGlow,
+      scrim: scrim ?? this.scrim,
       label: label ?? this.label,
     );
   }
@@ -81,6 +111,9 @@ class AppColors extends ThemeExtension<AppColors> {
       gray4: Color.lerp(gray4, other.gray4, t)!,
       yellow: Color.lerp(yellow, other.yellow, t)!,
       red: Color.lerp(red, other.red, t)!,
+      green: Color.lerp(green, other.green, t)!,
+      disconnectedGlow: Color.lerp(disconnectedGlow, other.disconnectedGlow, t)!,
+      scrim: Color.lerp(scrim, other.scrim, t)!,
       label: Color.lerp(label, other.label, t)!,
     );
   }

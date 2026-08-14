@@ -1,4 +1,8 @@
+import 'dart:math' as math;
+
 import 'package:json_annotation/json_annotation.dart';
+
+import '../domain/beacon_scanner.dart';
 
 part 'beacon_config_dto.g.dart';
 
@@ -43,4 +47,23 @@ class BeaconConfig {
   final int lateThresholdMinutes;
   final int rssiStabilizationSeconds;
   final int rssiThreshold;
+}
+
+/// [BeaconConfig](서버 응답)를 [BeaconScanConfig](스캐너 입력)로 바꾸는
+/// 유일한 경로. 서버는 `maxSampleGap`에 대응하는 필드를 내려주지 않으므로
+/// [BeaconScanConfig]의 기본값(2초)을 쓰되, 그 기본값이 이 클럽의
+/// `rssiStabilizationSeconds`보다 길면 안전 쪽으로 줄인다 — 그러지 않으면
+/// 안정화 시간을 짧게 설정한 클럽에서 `BeaconScanConfig`의 생성 자체가
+/// `ArgumentError`로 죽는다(`maxSampleGap`이 `stabilizationSeconds`를 넘을 수
+/// 없다는 것이 그 생성자의 계약이고, 그 계약은 릴리즈 빌드에서도 살아 있다).
+extension BeaconScanConfigMapping on BeaconConfig {
+  BeaconScanConfig toScanConfig() {
+    final gapSeconds = math.min(2, rssiStabilizationSeconds);
+    return BeaconScanConfig(
+      uuid: uuid,
+      rssiThreshold: rssiThreshold,
+      stabilizationSeconds: rssiStabilizationSeconds,
+      maxSampleGap: Duration(seconds: gapSeconds),
+    );
+  }
 }
