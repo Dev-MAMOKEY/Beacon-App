@@ -46,3 +46,8 @@ app.*.map.json
 
 # 환경 변수 — .env.example만 커밋한다
 .env
+
+# .env의 API_BASE_URL 호스트를 빌드 시점에 주입해 생성되는 파일 —
+# android/app/build.gradle.kts의 generateNetworkSecurityConfig 태스크가 만든다.
+# 커밋 대상은 network_security_config.template.xml뿐이다.
+/android/app/src/main/res/xml/network_security_config.xml
