@@ -18,7 +18,9 @@ import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
 import 'package:beacon_app/features/records/data/records_dto.dart';
 import 'package:beacon_app/features/records/data/records_repository.dart';
+import 'package:beacon_app/features/records/presentation/records_calendar.dart';
 import 'package:beacon_app/features/records/presentation/records_screen.dart';
+import 'package:beacon_app/features/records/presentation/session_detail_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -81,12 +83,47 @@ class _NoopRecordsRepository implements RecordsRepository {
 List<Override> _homeScreenOverrides({
   BeaconScanner? scanner,
   AttendanceRepository? attendanceRepository,
+  RecordsRepository? recordsRepository,
 }) => [
   beaconScannerProvider.overrideWithValue(scanner ?? FakeBeaconScanner()),
   beaconConfigRepositoryProvider.overrideWithValue(_NoopBeaconConfigRepository()),
   attendanceRepositoryProvider.overrideWithValue(attendanceRepository ?? _NoopAttendanceRepository()),
-  recordsRepositoryProvider.overrideWithValue(_NoopRecordsRepository()),
+  recordsRepositoryProvider.overrideWithValue(recordsRepository ?? _NoopRecordsRepository()),
 ];
+
+/// 조회 호출을 세고, 기록이 **있는** 달을 돌려주는 페이크 — 기록 탭이
+/// 숨어 있는 동안 조회를 날리지 않는지, 그리고 날짜 상세 시트가 탭을
+/// 떠날 때 함께 닫히는지 검증하는 테스트가 쓴다.
+class _CountingRecordsRepository implements RecordsRepository {
+  int fetchCount = 0;
+
+  @override
+  Future<MonthlyRecords> fetch({
+    required int clubId,
+    required int year,
+    required int month,
+  }) async {
+    fetchCount++;
+    return MonthlyRecords(
+      year: year,
+      month: month,
+      records: [
+        AttendanceRecordItem(
+          sessionId: 1,
+          sessionName: '정기모임',
+          // 어느 달이든 1일에는 기록이 있다 — 테스트가 탭할 날짜다.
+          date: DateTime(year, month),
+          status: AttendanceStatus.present,
+        ),
+      ],
+      present: 1,
+      absent: 0,
+      late: 0,
+      etc: 0,
+      attendanceRate: 100,
+    );
+  }
+}
 
 /// 활성 세션을 항상 돌려주고, checkIn 호출은 [status]로 확정하는 페이크
 /// — 완료 팝업이 하단 탭 셸을 덮는지 검증하는 테스트가 실제로 체크인
@@ -165,6 +202,7 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
   bool showAdmin = false,
   BeaconScanner? scanner,
   AttendanceRepository? attendanceRepository,
+  RecordsRepository? recordsRepository,
 }) async {
   final store = InMemoryTokenStore();
   if (clubIds != null) await store.save(accessToken: 'a', refreshToken: 'r');
@@ -174,7 +212,11 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
       tokenStoreProvider.overrideWithValue(store),
       authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(clubIds ?? const [])),
       showAdminTabProvider.overrideWithValue(showAdmin),
-      ..._homeScreenOverrides(scanner: scanner, attendanceRepository: attendanceRepository),
+      ..._homeScreenOverrides(
+        scanner: scanner,
+        attendanceRepository: attendanceRepository,
+        recordsRepository: recordsRepository,
+      ),
     ],
   );
   addTearDown(container.dispose);
@@ -419,6 +461,70 @@ void main() {
 
     expect(find.text('출석코드 입력'), findsNothing);
     expect(find.byType(RecordsScreen), findsOneWidget);
+  });
+
+  // ---------------------------------------------------------------------
+  // 기록 탭도 홈 탭과 같은 가시성 함정 위에 있다(#12).
+  //
+  // `StatefulShellRoute.indexedStack`은 숨은 브랜치를 dispose하지 않고 계속
+  // build한다 — 그래서 기록 화면도 (1) 숨은 채로 첫 조회를 날릴 수 있고,
+  // (2) 자기가 띄운 바텀시트를 다른 탭 위에 남길 수 있다. 이 두 가지는
+  // 얇은 하네스(`records_screen_test.dart`)로는 볼 수 없다 — 진짜 셸이
+  // 있어야 `TickerMode`가 실제로 꺼진다.
+  // ---------------------------------------------------------------------
+  testWidgets('기록 탭을 떠났다 돌아오면 그 달을 다시 조회한다', (tester) async {
+    // 잡아야 할 잘못된 구현: 최초 1회만 조회하고 끝낸다 — 홈에서 출석
+    // 체크를 하고 기록 탭으로 넘어와도 요약 숫자와 배지가 옛것 그대로다.
+    // (탭 전환으로는 dispose/initState가 불리지 않으므로 "다시 마운트되니까
+    // 알아서 새로 받겠지"가 성립하지 않는다.)
+    final records = _CountingRecordsRepository();
+    await _pumpRealRouter(tester, clubIds: const [7], recordsRepository: records);
+
+    // 홈 화면도 요약 카드용으로 이 리포지토리를 한 번 두드린다 — 기록 탭의
+    // 조회만 세려면 그 시점의 값을 기준으로 잡아야 한다.
+    final afterHomeBootstrap = records.fetchCount;
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+    expect(records.fetchCount, afterHomeBootstrap + 1, reason: '기록 탭이 처음 보일 때 조회한다');
+
+    await tester.tap(find.text('마이'));
+    await tester.pumpAndSettle();
+    final afterLeaving = records.fetchCount;
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+
+    expect(records.fetchCount, afterLeaving + 1, reason: '다시 보이면 지금 보고 있는 달을 새로 조회해야 한다');
+  });
+
+  testWidgets('날짜 상세 시트가 떠 있는 채로 기록 탭을 떠나면 시트도 함께 닫힌다', (tester) async {
+    // 잡아야 할 잘못된 구현: 시트를 `showModalBottomSheet`로만 띄우고 라우트를
+    // 소유하지 않는다 — 탭 전환은 dispose를 부르지 않으므로 루트 내비게이터에
+    // 붙은 시트가 홈 화면 위에 그대로 남아 앱을 막는다.
+    final records = _CountingRecordsRepository();
+    final (:router, container: _) = await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      recordsRepository: records,
+    );
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.descendant(of: find.byType(RecordsCalendar), matching: find.text('1')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionDetailSheetContent), findsOneWidget);
+
+    // 시트의 스크림이 하단 탭 바를 덮고 있어 탭으로는 이동할 수 없다 —
+    // 라우터로 직접 이동한다(코드 입력 팝업 테스트와 같은 이유).
+    router.go(AppRoutes.home);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SessionDetailSheetContent), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
   });
 
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
