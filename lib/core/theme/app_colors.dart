@@ -16,6 +16,7 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.red,
     required this.green,
     required this.disconnectedGlow,
+    required this.scrim,
     required this.label,
   });
 
@@ -40,6 +41,12 @@ class AppColors extends ThemeExtension<AppColors> {
   /// 발명이 아니라 Figma에서 그대로 뽑아낸 값이라 토큰으로 승격한다.
   final Color disconnectedGlow;
 
+  /// 팝업(다이얼로그) 뒤를 덮는 스크림. Figma 변수에는 없고 팝업 프레임의
+  /// 배경 불투명도(검정 40%)로만 표현돼 있던 값이라 토큰으로 승격한다 —
+  /// `lib/components/ui/popup.dart`가 `Colors.black.withValues(alpha: 0.4)`를
+  /// 직접 쓰던 자리다. 알파 0.4 = 0x66.
+  final Color scrim;
+
   final Color label;
 
   static const AppColors light = AppColors(
@@ -54,6 +61,7 @@ class AppColors extends ThemeExtension<AppColors> {
     red: Color(0xFFFF5D5D),
     green: Color(0xFF16CE69),
     disconnectedGlow: Color(0xFF94A8BD),
+    scrim: Color(0x66000000),
     label: Color(0xFF000000),
   );
 
@@ -70,6 +78,7 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? red,
     Color? green,
     Color? disconnectedGlow,
+    Color? scrim,
     Color? label,
   }) {
     return AppColors(
@@ -84,6 +93,7 @@ class AppColors extends ThemeExtension<AppColors> {
       red: red ?? this.red,
       green: green ?? this.green,
       disconnectedGlow: disconnectedGlow ?? this.disconnectedGlow,
+      scrim: scrim ?? this.scrim,
       label: label ?? this.label,
     );
   }
@@ -103,6 +113,7 @@ class AppColors extends ThemeExtension<AppColors> {
       red: Color.lerp(red, other.red, t)!,
       green: Color.lerp(green, other.green, t)!,
       disconnectedGlow: Color.lerp(disconnectedGlow, other.disconnectedGlow, t)!,
+      scrim: Color.lerp(scrim, other.scrim, t)!,
       label: Color.lerp(label, other.label, t)!,
     );
   }

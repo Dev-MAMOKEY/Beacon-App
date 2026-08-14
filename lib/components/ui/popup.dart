@@ -42,7 +42,9 @@ Future<T?> showAppPopup<T>({
   return showDialog<T>(
     context: context,
     barrierDismissible: barrierDismissible,
-    barrierColor: Colors.black.withValues(alpha: 0.4),
+    // 스크림도 색이다 — `lib/core/theme/` 밖에서 `Colors.black`을 직접 쓰지
+    // 않는다(`AppColors.scrim`).
+    barrierColor: Theme.of(context).extension<AppColors>()!.scrim,
     // `showDialog`의 기본값이 이미 true라 동작 자체는 바뀌지 않지만,
     // 명시로 남긴다 — 출석코드 입력·블루투스 꺼짐 팝업이 인라인
     // `Positioned.fill` 오버레이였을 때는 홈 화면(하단 탭 셸의 중첩

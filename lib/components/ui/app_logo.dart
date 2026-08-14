@@ -8,13 +8,14 @@ import '../../core/theme/app_colors.dart';
 /// 바 세 곳이 각자 `Text('Beacon', ...)`으로 같은 문자열을 따로 스타일링해
 /// 반복해 오던 것을 이 위젯 하나로 대체한다.
 ///
-/// SVG 파일 자체에는 `#54A2EA`(=`AppColors.main`)가 박혀 있지만, 그 값을
-/// 그대로 믿고 칠하지 않는다 — 그러면 테마의 `main` 토큰을 바꿔도 이
-/// 자산은 색이 안 바뀌는, `lib/core/theme/` 밖 하드코딩 `Color(0x…)`와
-/// 같은 부류의 결함이 grep 게이트만 피해 숨어버린다. 항상
-/// `Theme.of(context)`에서 읽은 `AppColors.main`으로 `colorFilter`를
-/// 입혀, 자산의 원래 색과 우연히 같아 보여도 실제로는 테마가 정본이 되게
-/// 한다.
+/// Figma 원본에는 `#54A2EA`(=`AppColors.main`)가 박혀 있었지만 자산에서
+/// 걷어내고 중립 플레이스홀더(`fill="black"`)로 바꿨다 — 토큰값을 에셋에
+/// 구워 두면 테마의 `main`을 바꿔도 이 자산만 옛 색으로 남는,
+/// `lib/core/theme/` 밖 하드코딩 `Color(0x…)`와 같은 부류의 결함이 grep
+/// 게이트만 피해 숨어버린다(`app_theme_test.dart`의 "assets/icons의 SVG에는
+/// 16진수 색 리터럴이 없다"가 이 규칙을 고정한다). 실제 색은 항상
+/// `Theme.of(context)`에서 읽은 `AppColors.main`으로 `colorFilter`를 입혀
+/// 낸다.
 class AppLogo extends StatelessWidget {
   const AppLogo({super.key, this.height = _naturalHeight});
 
