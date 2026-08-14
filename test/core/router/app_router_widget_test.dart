@@ -329,6 +329,97 @@ void main() {
     expect(find.text('출석 완료!'), findsOneWidget);
   });
 
+  // ---------------------------------------------------------------------
+  // 리뷰 Important 3 — 홈 탭을 떠나도 스캔이 계속되고, 다른 탭 위로 팝업이
+  // 뜬다.
+  //
+  // `StatefulShellRoute.indexedStack`은 숨은 브랜치를 dispose하지 않는다
+  // (`Offstage` + `TickerMode(enabled: false)`로 감싼 채 살려 둔다) —
+  // 그래서 `HomeScreen.dispose()`의 정리 로직은 탭 전환으로는 **아예 실행되지
+  // 않는다**. 이 사실은 얇은 하네스(`home_screen_test.dart`의 `_pumpHome`)로는
+  // 볼 수 없고, 진짜 셸을 마운트하는 이 파일에서만 검증할 수 있다.
+  // ---------------------------------------------------------------------
+  testWidgets('홈 탭을 떠나면 BLE 스캔이 멈추고, 돌아오면 다시 시작된다', (tester) async {
+    // 잡아야 할 잘못된 구현: 정리를 `dispose()`에만 둔다 — 탭 전환으로는
+    // dispose가 불리지 않으므로 숨은 홈이 계속 BLE를 돌린다(배터리).
+    final scanner = FakeBeaconScanner();
+    await _pumpRealRouter(tester, clubIds: const [7], scanner: scanner);
+
+    expect(scanner.watchCallCount, 1);
+    expect(scanner.stopCallCount, 0);
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+
+    expect(
+      scanner.stopCallCount,
+      greaterThanOrEqualTo(1),
+      reason: '홈 탭이 보이지 않는 동안 BLE 스캔이 계속 돌 이유가 없다',
+    );
+
+    await tester.tap(find.text('홈'));
+    await tester.pumpAndSettle();
+
+    expect(
+      scanner.watchCallCount,
+      2,
+      reason: '다시 보이면 스캔을 재개해야 한다 — 새 watch()라 안정화 스트릭도 0에서 다시 쌓인다',
+    );
+  });
+
+  testWidgets('숨은 홈 화면은 기록 탭 위로 출석코드 팝업을 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 숨은 홈이 비콘 스트림을 계속 구독한 채로
+    // 있다가 범위 안에 들어오는 순간 루트 내비게이터에 코드 입력
+    // 다이얼로그를 밀어 넣는다 — 사용자는 기록 화면을 보고 있는데 출석
+    // 코드 팝업이 튀어나온다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ActiveSessionAttendanceRepository(status: AttendanceStatus.present);
+    await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+
+    // 기록 탭을 보는 동안 사용자가 비콘 범위 안으로 들어왔다.
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsNothing);
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+  });
+
+  testWidgets('코드 입력 팝업이 떠 있는 채로 홈 탭을 떠나면 팝업도 함께 닫힌다', (tester) async {
+    // 잡아야 할 잘못된 구현: 팝업 정리를 `dispose()`에만 둔다 — 탭 전환은
+    // dispose를 부르지 않으므로, 루트 내비게이터에 붙은 팝업이 기록 화면
+    // 위에 그대로 남아 앱을 막는다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ActiveSessionAttendanceRepository(status: AttendanceStatus.present);
+    final (:router, container: _) = await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+
+    // 팝업의 스크림이 하단 탭 바를 덮고 있어 탭으로는 이동할 수 없다
+    // (그건 별도 테스트가 고정한다) — 라우터로 직접 이동한다.
+    router.go(AppRoutes.records);
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsNothing);
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+  });
+
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
   // 상단 바는 고정 문구 "홈"이 아니라 로그인한 멤버의 이름을 보여준다.
   testWidgets('홈 탭의 상단 바는 고정 문구 대신 멤버 이름을 보여준다', (tester) async {
