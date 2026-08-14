@@ -1,3 +1,4 @@
+import 'package:beacon_app/components/ui/button.dart';
 import 'package:beacon_app/components/ui/otp_input.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
@@ -101,6 +102,31 @@ class _EmptyRecordsRepository implements RecordsRepository {
   }
 }
 
+class _FixedRecordsRepository implements RecordsRepository {
+  const _FixedRecordsRepository({required this.late, required this.absent});
+
+  final int late;
+  final int absent;
+
+  @override
+  Future<MonthlyRecords> fetch({
+    required int clubId,
+    required int year,
+    required int month,
+  }) async {
+    return MonthlyRecords(
+      year: year,
+      month: month,
+      records: const [],
+      present: 10,
+      absent: absent,
+      late: late,
+      etc: 0,
+      attendanceRate: 94,
+    );
+  }
+}
+
 Future<ProviderContainer> _pumpHome(
   WidgetTester tester, {
   required FakeBeaconScanner scanner,
@@ -160,6 +186,39 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(AppOtpInput), findsOneWidget);
+  });
+
+  // Figma 실측(339:1683 "출석코드 팝업창")에서 처음 드러난 텍스트 — 최초
+  // 구현(프로즈 브리핑 기반)에는 이 제목·안내 문구가 아예 없었다.
+  testWidgets('코드 입력 팝업에 제목과 안내 문구가 표시된다', (tester) async {
+    // 잡아야 할 잘못된 구현: 입력란만 그리고 제목/안내 문구를 빼먹는다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsOneWidget);
+    expect(find.text('4자리 번호를 입력하세요'), findsOneWidget);
+  });
+
+  // Figma의 팝업엔 버튼이 하나 그려져 있지만(기본값 "로그인"이 그대로
+  // 남아 있어 미설정 상태로 보인다), 명세서는 4자리 완성 즉시 자동
+  // 제출하며 확인 버튼이 없어야 한다고 명시한다 — 동작은 명세서를
+  // 따랐다(조정자 확인 대기). 이 결정이 조용히 뒤집히지 않도록 고정한다.
+  testWidgets('코드 입력 팝업에는 확인 버튼이 없다', (tester) async {
+    // 잡아야 할 잘못된 구현: Figma를 그대로 따라 확인/로그인 버튼을
+    // 추가한다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppOtpInput), findsOneWidget);
+    expect(find.byType(AppButton), findsNothing);
   });
 
   testWidgets('비콘 감지 + 세션 없음 → 입력란이 열리지 않는다', (tester) async {
@@ -282,6 +341,29 @@ void main() {
     expect(scanner.stopCallCount, greaterThanOrEqualTo(1));
   });
 
+  // Figma 실측(401:1986/404:2026 "출석 상태")에서 처음 드러난 라벨 —
+  // 최초 구현은 프로즈만 보고 "이번달 출석률"/"지각"/"결석"이라는 다른
+  // 문구를 썼다.
+  testWidgets('요약 카드 라벨이 Figma 실측 문구(출석률/지각 횟수/결석 횟수)와 정확히 일치한다', (
+    tester,
+  ) async {
+    // 잡아야 할 잘못된 구현: "이번달 출석률"/"지각"/"결석"처럼 프로즈에서
+    // 임의로 지어낸 라벨을 그대로 쓴다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+      recordsRepository: const _FixedRecordsRepository(late: 2, absent: 1),
+    );
+
+    expect(find.text('출석률'), findsOneWidget);
+    expect(find.text('지각 횟수'), findsOneWidget);
+    expect(find.text('결석 횟수'), findsOneWidget);
+    expect(find.text('이번달 출석률'), findsNothing);
+  });
+
   testWidgets('블루투스 꺼짐 상태에서 설정 열기 버튼이 렌더된다', (tester) async {
     // 잡아야 할 잘못된 구현: 비콘 상태를 무시하고 항상 같은 화면을 그린다
     // — BluetoothOff여도 "설정 열기" 버튼이 나타나지 않는다.
@@ -309,7 +391,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('지각 처리되었습니다'), findsOneWidget);
-    expect(find.text('출석 완료'), findsNothing);
+    expect(find.text('출석 완료!'), findsNothing);
   });
 
   testWidgets('서버가 PRESENT를 돌려주면 출석 완료를 보여준다', (tester) async {
@@ -326,7 +408,7 @@ void main() {
     await _enterOtp(tester, '1234');
     await tester.pumpAndSettle();
 
-    expect(find.text('출석 완료'), findsOneWidget);
+    expect(find.text('출석 완료!'), findsOneWidget);
     expect(find.text('지각 처리되었습니다'), findsNothing);
   });
 
@@ -344,12 +426,12 @@ void main() {
     await _enterOtp(tester, '1234');
     await tester.pumpAndSettle();
 
-    expect(find.text('출석 완료'), findsOneWidget);
+    expect(find.text('출석 완료!'), findsOneWidget);
 
     await tester.tap(find.text('확인'));
     await tester.pumpAndSettle();
 
-    expect(find.text('출석 완료'), findsNothing, reason: '완료 시트가 닫혀 있어야 한다');
+    expect(find.text('출석 완료!'), findsNothing, reason: '완료 시트가 닫혀 있어야 한다');
     // 비콘은 여전히 감지 상태(Detected)이고 활성 세션도 그대로지만, 이미
     // 출석을 마쳤으므로 입력란은 다시 열리면 안 된다.
     expect(find.byType(AppOtpInput), findsNothing);

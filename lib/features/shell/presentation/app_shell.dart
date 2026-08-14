@@ -6,6 +6,7 @@ import '../../../components/nav/app_bottom_nav.dart';
 import '../../../components/nav/app_top_bar.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../auth/presentation/session_controller.dart';
 
 /// `StatefulShellRoute.indexedStack`가 만드는 하단 탭 셸. 탭 4개(홈/기록/
 /// 관리자/마이) 각각이 독립된 네비게이션 스택을 갖고, 탭을 전환해도 이전
@@ -31,10 +32,16 @@ class AppShell extends ConsumerWidget {
     // 찍어두면 다른 내비게이션이 셸을 다시 빌드하기 전까지 탭 3개짜리
     // 바가 그대로 남는다.
     final showAdmin = ref.watch(showAdminTabProvider);
+    // 홈 탭의 상단 바 제목은 Figma 실측(339:1498/326:1569 "상단 메뉴")상
+    // 고정 문구 "홈"이 아니라 로그인한 멤버의 이름이다. SessionReady가
+    // 아닌 순간(이론상 셸 진입 전에는 있을 수 없지만 방어적으로)에는
+    // 기존 고정 문구로 대체한다.
+    final session = ref.watch(sessionControllerProvider).value;
+    final memberName = session is SessionReady ? session.profile.name : null;
 
     return Scaffold(
       backgroundColor: colors.bg,
-      appBar: AppTopBar(title: _titleFor(currentLocation)),
+      appBar: AppTopBar(title: _titleFor(currentLocation, memberName: memberName)),
       body: navigationShell,
       bottomNavigationBar: AppBottomNav(
         currentIndex: navigationShell.currentIndex,
@@ -49,8 +56,8 @@ class AppShell extends ConsumerWidget {
     );
   }
 
-  String _titleFor(String location) => switch (location) {
-    AppRoutes.home => '홈',
+  String _titleFor(String location, {required String? memberName}) => switch (location) {
+    AppRoutes.home => memberName ?? '홈',
     AppRoutes.records => '기록',
     AppRoutes.admin => '관리자',
     AppRoutes.profile => '마이페이지',

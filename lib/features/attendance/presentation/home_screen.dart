@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../components/beacon/beacon_pulse.dart';
 import '../../../components/ui/app_progress_bar.dart';
 import '../../../components/ui/button.dart';
 import '../../../components/ui/card.dart';
 import '../../../components/ui/otp_input.dart';
+import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
@@ -24,11 +26,13 @@ import '../data/attendance_repository.dart';
 import 'attendance_controller.dart';
 import 'attendance_success_sheet.dart';
 
-const List<String> _weekdayNames = ['월', '화', '수', '목', '금', '토', '일'];
-
+/// Figma 실측(339:1498/326:1569 "환영인사 텍스트") — 연도·월·일을 모두
+/// 2자리로 채운 "YYYY년 MM월 DD일" 형식이고 요일이 없다. 최초 구현은
+/// 프로즈만 보고 "M월 D일 (요일)" 형식을 임의로 붙였었다.
 String _formatTodayLabel(DateTime date) {
-  final weekday = _weekdayNames[date.weekday - 1];
-  return '${date.month}월 ${date.day}일 ($weekday)';
+  final month = date.month.toString().padLeft(2, '0');
+  final day = date.day.toString().padLeft(2, '0');
+  return '${date.year}년 $month월 $day일';
 }
 
 /// 홈 화면(이슈 #11) — 비콘 감지와 활성 세션의 AND 조건에서만 4자리 출석
@@ -140,6 +144,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
+  /// 비콘 감지 AND 활성 세션 AND 아직 미완료 — 코드 입력 팝업을 여는
+  /// 유일한 조건. Figma 실측 결과 코드 입력은 홈 화면 안에 박혀 있는
+  /// 콘텐츠가 아니라 그 위에 뜨는 별도 팝업(339:1683)이었다 — 그래서
+  /// 조건에 따라 화면 트리에 얹었다 뗐다 하는 오버레이로 구현한다.
+  bool get _codeInputOpen =>
+      _beaconState is BeaconDetected && _activeSession != null && !_attendanceDone;
+
   void _onOtpCompleted(String code) {
     unawaited(_submitCode(code));
   }
@@ -218,20 +229,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return ColoredBox(
       color: colors.bg,
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _Header(name: session.profile.name, colors: colors, typography: typography),
-              const SizedBox(height: 32),
-              Center(child: _buildBeaconSection(colors, typography)),
-              const SizedBox(height: 32),
-              _SummaryCards(records: _records),
-            ],
+      child: Stack(
+        children: [
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // 사용자 이름은 상단 바(AppShell)가 이미 보여준다(Figma
+                  // "상단 메뉴") — 여기서 다시 반복하지 않는다. 날짜만
+                  // 가운데 정렬로 표시한다.
+                  Center(
+                    child: Text(
+                      _formatTodayLabel(DateTime.now()),
+                      style: typography.title4.copyWith(color: colors.gray2),
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  Center(child: _buildBeaconSection(colors, typography)),
+                  const SizedBox(height: 36),
+                  _SummaryCards(records: _records),
+                ],
+              ),
+            ),
           ),
-        ),
+          if (_codeInputOpen) _codeEntryOverlay(colors, typography),
+        ],
       ),
     );
   }
@@ -265,45 +289,81 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _detectedSection(AppColors colors, AppTypography typography) {
+    // 코드 입력은 이제 별도 팝업(_codeEntryOverlay)이 담당한다 — 감지됨
+    // 상태에서는 동심원과(있다면) 보조 안내문만 그린다.
     return Column(
       children: [
         const BeaconPulse(state: BeaconPulseState.connected),
-        const SizedBox(height: 24),
-        if (_activeSession == null)
+        if (_activeSession == null) ...[
+          const SizedBox(height: 24),
           Text(
             '현재 진행 중인 출석 세션이 없습니다',
             textAlign: TextAlign.center,
             style: typography.body3.copyWith(color: colors.gray2),
-          )
-        else if (_attendanceDone)
-          Text(
-            '오늘 출석이 완료되었습니다',
-            style: typography.body3.copyWith(color: colors.gray2),
-          )
-        else
-          _otpArea(colors, typography),
+          ),
+        ] else if (_attendanceDone) ...[
+          const SizedBox(height: 24),
+          Text('오늘 출석이 완료되었습니다', style: typography.body3.copyWith(color: colors.gray2)),
+        ],
       ],
     );
   }
 
-  Widget _otpArea(AppColors colors, AppTypography typography) {
-    return Column(
-      children: [
-        AppOtpInput(
-          length: 4,
-          controller: _otpController,
-          enabled: !_submitting,
-          onCompleted: _onOtpCompleted,
+  /// 출석코드 입력 팝업(Figma `339:1683` "출석코드 팝업창"). 확인 버튼
+  /// 탭이 아니라 조건(`_codeInputOpen`)에 따라 화면 트리에서 나타났다
+  /// 사라진다 — 라우트 기반 다이얼로그가 아니라 오버레이인 이유는, 조건이
+  /// 거짓이 되는 순간(비콘 범위 이탈 등) 별도의 팝(pop) 처리 없이 그냥
+  /// 사라져야 하기 때문이다.
+  Widget _codeEntryOverlay(AppColors colors, AppTypography typography) {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.4),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: AppPopupCard(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '출석코드 입력',
+                textAlign: TextAlign.center,
+                style: typography.title4.copyWith(color: colors.gray3),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '4자리 번호를 입력하세요',
+                textAlign: TextAlign.center,
+                style: typography.body2.copyWith(color: colors.gray2),
+              ),
+              const SizedBox(height: 24),
+              // Figma는 이 자리 아래에 버튼을 하나 더 그려 뒀지만(기본값
+              // "로그인"이 그대로 남아 있어 미설정 상태로 보인다), 4자리를
+              // 채우는 즉시 자동 제출한다는 명세서 요구와 정면으로
+              // 충돌한다 — 확인 버튼을 요구하는 쪽은 명세서가 명시적으로
+              // 금지하므로, 동작(스펙)을 따라 버튼을 넣지 않았다.
+              // 조정자 확인 대기, 리포트 참고.
+              AppOtpInput(
+                length: 4,
+                controller: _otpController,
+                enabled: !_submitting,
+                onCompleted: _onOtpCompleted,
+              ),
+              if (_invalidCodeMessage != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _invalidCodeMessage!,
+                  textAlign: TextAlign.center,
+                  style: typography.body3.copyWith(color: colors.red),
+                ),
+              ],
+              if (_needsManualRetry) ...[
+                const SizedBox(height: 12),
+                AppButton.ghost(label: '다시 시도', size: ButtonSize.md, onPressed: _retry),
+              ],
+            ],
+          ),
         ),
-        if (_invalidCodeMessage != null) ...[
-          const SizedBox(height: 8),
-          Text(_invalidCodeMessage!, style: typography.body3.copyWith(color: colors.red)),
-        ],
-        if (_needsManualRetry) ...[
-          const SizedBox(height: 12),
-          AppButton.ghost(label: '다시 시도', size: ButtonSize.md, onPressed: _retry),
-        ],
-      ],
+      ),
     );
   }
 
@@ -358,25 +418,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.name, required this.colors, required this.typography});
-
-  final String name;
-  final AppColors colors;
-  final AppTypography typography;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text('$name님', style: typography.title4.copyWith(color: colors.gray3)),
-        Text(_formatTodayLabel(DateTime.now()), style: typography.body3.copyWith(color: colors.gray2)),
-      ],
-    );
-  }
-}
-
+/// 요약 카드 3종(Figma `401:1986`/`404:2026` "출석 상태"). 전체 폭
+/// 출석률 카드 하나 위에, 지각·결석 카드 두 개가 나란히 온다 — 세 칸이
+/// 한 줄로 늘어선 배치가 아니다.
 class _SummaryCards extends StatelessWidget {
   const _SummaryCards({required this.records});
 
@@ -384,35 +428,106 @@ class _SummaryCards extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
     final r = records;
-    return Row(
+
+    return Column(
       children: [
-        Expanded(
-          child: _SummaryCard(
-            label: '이번달 출석률',
-            value: r == null ? '-' : '${r.attendanceRate.toStringAsFixed(0)}%',
-            progress: r == null ? null : r.attendanceRate / 100,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _SummaryCard(label: '지각', value: r == null ? '-' : '${r.late}회'),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _SummaryCard(label: '결석', value: r == null ? '-' : '${r.absent}회'),
+        _RateCard(rate: r?.attendanceRate),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: _CountCard(
+                iconAsset: 'assets/icons/time-line.svg',
+                iconColor: colors.yellow,
+                label: '지각 횟수',
+                value: r?.late,
+              ),
+            ),
+            const SizedBox(width: 13),
+            Expanded(
+              child: _CountCard(
+                iconAsset: 'assets/icons/error-warning-line.svg',
+                iconColor: colors.red,
+                label: '결석 횟수',
+                value: r?.absent,
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.label, required this.value, this.progress});
+class _RateCard extends StatelessWidget {
+  const _RateCard({required this.rate});
 
+  final double? rate;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    final typography = Theme.of(context).extension<AppTypography>()!;
+    final displayValue = rate == null ? '-' : rate!.toStringAsFixed(0);
+
+    return AppCard(
+      borderRadius: 24,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SvgPicture.asset(
+                    'assets/icons/calendar-check-line.svg',
+                    width: 24,
+                    height: 24,
+                    colorFilter: ColorFilter.mode(colors.main, BlendMode.srcIn),
+                  ),
+                  const SizedBox(height: 10),
+                  Text('출석률', style: typography.body2.copyWith(color: colors.gray2)),
+                ],
+              ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(displayValue, style: typography.number1.copyWith(color: colors.gray3)),
+                  const SizedBox(width: 4),
+                  // Figma는 "%" 표기를 23px SemiBold로 그렸다 — 토큰에
+                  // 없는 크기라 가장 가까운 기존 토큰(title3, 24px)으로
+                  // 대체했다.
+                  Text('%', style: typography.title3.copyWith(color: colors.gray3)),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          AppProgressBar(value: (rate ?? 0) / 100),
+        ],
+      ),
+    );
+  }
+}
+
+class _CountCard extends StatelessWidget {
+  const _CountCard({
+    required this.iconAsset,
+    required this.iconColor,
+    required this.label,
+    required this.value,
+  });
+
+  final String iconAsset;
+  final Color iconColor;
   final String label;
-  final String value;
-  final double? progress;
+  final int? value;
 
   @override
   Widget build(BuildContext context) {
@@ -420,17 +535,28 @@ class _SummaryCard extends StatelessWidget {
     final typography = Theme.of(context).extension<AppTypography>()!;
 
     return AppCard(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      borderRadius: 24,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          Text(label, style: typography.title7.copyWith(color: colors.gray2)),
-          const SizedBox(height: 8),
-          Text(value, style: typography.title3.copyWith(color: colors.gray3)),
-          if (progress != null) ...[
-            const SizedBox(height: 8),
-            AppProgressBar(value: progress!),
-          ],
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SvgPicture.asset(
+                iconAsset,
+                width: 24,
+                height: 24,
+                colorFilter: ColorFilter.mode(iconColor, BlendMode.srcIn),
+              ),
+              const SizedBox(height: 10),
+              Text(label, style: typography.body2.copyWith(color: colors.gray2)),
+            ],
+          ),
+          Text(
+            value == null ? '-' : '$value',
+            style: typography.number1.copyWith(color: colors.gray3),
+          ),
         ],
       ),
     );

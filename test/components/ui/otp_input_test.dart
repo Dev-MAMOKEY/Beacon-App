@@ -19,6 +19,19 @@ void main() {
     expect(find.byType(TextField), findsNWidgets(4));
   });
 
+  // Figma 실측(339:1683, 파일 O9RRQnJwoqsjU8LrJKeaAX)에서 드러난 요소 —
+  // 빈 칸은 흰 배경+테두리가 아니라 gray4로 채워지고 가운뎃점(·)
+  // 플레이스홀더를 보여준다. 최초 구현(프로즈 브리핑 기반)에는 이
+  // 플레이스홀더가 아예 없었다.
+  testWidgets('빈 칸은 가운뎃점(·) 플레이스홀더를 보여준다', (tester) async {
+    // 잡아야 할 잘못된 구현: hintText를 설정하지 않아 빈 칸이 완전히
+    // 비어 보인다.
+    await tester.pumpWidget(_host(AppOtpInput(length: 4, onCompleted: (_) {})));
+    await tester.pump();
+
+    expect(find.text('·'), findsNWidgets(4));
+  });
+
   testWidgets('마지막 자리를 채우면 onCompleted가 한 번 호출된다', (tester) async {
     final entered = <String>[];
     await tester.pumpWidget(

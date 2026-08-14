@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
@@ -11,18 +12,26 @@ import '../../core/theme/app_typography.dart';
 /// 따로 그린다.
 enum BeaconPulseState { connected, disconnected }
 
-/// 홈 화면 중앙의 동심원 시각화. 디자인 값(고정): 감지됨은 `#16CE69` —
-/// 바깥 글로우(35 블러, 230 크기)와 안쪽 원(30% 불투명도, 192 크기)의
-/// 조합이고 라벨은 디자인 표기 그대로 `CONNETED`. 미감지는 `gray1` 단색
-/// 원과 `NOT CONNETED` 라벨이다.
+/// 홈 화면 중앙의 동심원 시각화. Figma 실측(`339:1642`/`326:1587`, 파일
+/// `O9RRQnJwoqsjU8LrJKeaAX`) 기준:
+/// - 바깥 래퍼 256×256, 글로우(블러 35) 230, 안쪽 원 192.
+/// - 감지됨: `#16CE69`(=[AppColors.green]) 100%/30%, 아이콘 `router-fill`,
+///   라벨 `CONNETED`(디자인 표기 그대로 — 오타 아님).
+/// - 미감지: 아이콘 `router-line`, 라벨 `NOT CONNETED`. **Figma의 실제 색은
+///   `#94A8BD`이지만 이 값은 `AppColors`에 없는 토큰 밖 색이다** — 하드코딩
+///   대신 기존 `gray1` 토큰으로 대체했다(조정자 확인 대기, 리포트 참고).
+/// - 아이콘-라벨 세로 배치, 간격 6, 라벨 스타일은 `body1`(18px Medium) —
+///   `title6`이 아니다.
 class BeaconPulse extends StatelessWidget {
   const BeaconPulse({super.key, required this.state});
 
   final BeaconPulseState state;
 
+  static const double _wrapperSize = 256;
   static const double _outerSize = 230;
   static const double _innerSize = 192;
   static const double _outerBlurSigma = 35;
+  static const double _iconSize = 36;
 
   @override
   Widget build(BuildContext context) {
@@ -30,25 +39,56 @@ class BeaconPulse extends StatelessWidget {
     final typography = Theme.of(context).extension<AppTypography>()!;
 
     return switch (state) {
-      BeaconPulseState.connected => _ConnectedPulse(colors: colors, typography: typography),
-      BeaconPulseState.disconnected => _DisconnectedPulse(colors: colors, typography: typography),
+      BeaconPulseState.connected => _Pulse(
+        glowColor: colors.green,
+        innerColor: colors.green.withValues(alpha: 0.3),
+        iconAsset: 'assets/icons/router-fill.svg',
+        label: 'CONNETED',
+        semanticLabel: '비콘 감지됨',
+        typography: typography,
+        colors: colors,
+      ),
+      BeaconPulseState.disconnected => _Pulse(
+        // Figma 실측 색은 #94A8BD이나 AppColors에 없는 토큰 밖 값이라
+        // 하드코딩하지 않고 기존 gray1로 대체했다 — 리포트에 플래그.
+        glowColor: colors.gray1,
+        innerColor: colors.gray1.withValues(alpha: 0.3),
+        iconAsset: 'assets/icons/router-line.svg',
+        label: 'NOT CONNETED',
+        semanticLabel: '비콘을 찾는 중입니다',
+        typography: typography,
+        colors: colors,
+      ),
     };
   }
 }
 
-class _ConnectedPulse extends StatelessWidget {
-  const _ConnectedPulse({required this.colors, required this.typography});
+class _Pulse extends StatelessWidget {
+  const _Pulse({
+    required this.glowColor,
+    required this.innerColor,
+    required this.iconAsset,
+    required this.label,
+    required this.semanticLabel,
+    required this.typography,
+    required this.colors,
+  });
 
-  final AppColors colors;
+  final Color glowColor;
+  final Color innerColor;
+  final String iconAsset;
+  final String label;
+  final String semanticLabel;
   final AppTypography typography;
+  final AppColors colors;
 
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      label: '비콘 감지됨',
+      label: semanticLabel,
       child: SizedBox(
-        width: BeaconPulse._outerSize,
-        height: BeaconPulse._outerSize,
+        width: BeaconPulse._wrapperSize,
+        height: BeaconPulse._wrapperSize,
         child: Stack(
           alignment: Alignment.center,
           children: [
@@ -60,52 +100,29 @@ class _ConnectedPulse extends StatelessWidget {
               child: Container(
                 width: BeaconPulse._outerSize,
                 height: BeaconPulse._outerSize,
-                decoration: BoxDecoration(shape: BoxShape.circle, color: colors.green),
+                decoration: BoxDecoration(shape: BoxShape.circle, color: glowColor),
               ),
             ),
             Container(
               width: BeaconPulse._innerSize,
               height: BeaconPulse._innerSize,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: colors.green.withValues(alpha: 0.3),
+              decoration: BoxDecoration(shape: BoxShape.circle, color: innerColor),
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SvgPicture.asset(
+                    iconAsset,
+                    width: BeaconPulse._iconSize,
+                    height: BeaconPulse._iconSize,
+                    colorFilter: ColorFilter.mode(colors.white, BlendMode.srcIn),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(label, style: typography.body1.copyWith(color: colors.white)),
+                ],
               ),
             ),
-            Text(
-              'CONNETED',
-              style: typography.title6.copyWith(color: colors.white),
-            ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DisconnectedPulse extends StatelessWidget {
-  const _DisconnectedPulse({required this.colors, required this.typography});
-
-  final AppColors colors;
-  final AppTypography typography;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: '비콘을 찾는 중입니다',
-      child: SizedBox(
-        width: BeaconPulse._outerSize,
-        height: BeaconPulse._outerSize,
-        child: Center(
-          child: Container(
-            width: BeaconPulse._innerSize,
-            height: BeaconPulse._innerSize,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: colors.gray1),
-            alignment: Alignment.center,
-            child: Text(
-              'NOT CONNETED',
-              style: typography.title6.copyWith(color: colors.white),
-            ),
-          ),
         ),
       ),
     );

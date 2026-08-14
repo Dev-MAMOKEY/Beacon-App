@@ -1,3 +1,4 @@
+import 'package:beacon_app/components/nav/app_top_bar.dart';
 import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/router/app_router.dart';
 import 'package:beacon_app/core/storage/token_store.dart';
@@ -194,6 +195,22 @@ void main() {
 
     // `/home` GoRoute가 없거나 다른 화면을 가리키면 이 expect가 실패한다.
     expect(find.byType(HomeScreen), findsOneWidget);
+  });
+
+  // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
+  // 상단 바는 고정 문구 "홈"이 아니라 로그인한 멤버의 이름을 보여준다.
+  testWidgets('홈 탭의 상단 바는 고정 문구 대신 멤버 이름을 보여준다', (tester) async {
+    // 잡아야 할 잘못된 구현: AppShell이 모든 탭에 고정 문구를 쓰던 기존
+    // 방식대로 홈 탭에도 "홈"을 그대로 보여준다.
+    await _pumpRealRouter(tester, clubIds: const [7]);
+
+    // 하단 탭 라벨("홈")은 AppBottomNav가 항상 그리므로 그와 무관하게
+    // 상단 바 제목만 확인한다 — AppTopBar 서브트리 안에서 찾는다.
+    final topBarTitle = find.descendant(
+      of: find.byType(AppTopBar),
+      matching: find.text('김민준'),
+    );
+    expect(topBarTitle, findsOneWidget);
   });
 
   testWidgets('저장된 토큰이 없으면 /login으로 이동해 LoginScreen을 렌더링한다', (tester) async {
