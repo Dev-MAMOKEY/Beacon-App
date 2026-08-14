@@ -30,6 +30,7 @@ void main() {
     final b = a.copyWith(main: const Color(0xFF000000));
     final mid = a.lerp(b, 0);
     expect(mid.main, a.main);
+    expect(mid.disconnectedGlow, a.disconnectedGlow);
   });
 
   test('AppColors.copyWith()는 인자가 없으면 모든 필드를 그대로 유지한다', () {
@@ -45,6 +46,8 @@ void main() {
     expect(copy.gray4, original.gray4);
     expect(copy.yellow, original.yellow);
     expect(copy.red, original.red);
+    expect(copy.green, original.green);
+    expect(copy.disconnectedGlow, original.disconnectedGlow);
     expect(copy.label, original.label);
   });
 

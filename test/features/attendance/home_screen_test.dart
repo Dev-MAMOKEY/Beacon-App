@@ -10,6 +10,7 @@ import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
+import 'package:beacon_app/features/beacon/data/beacon_settings.dart';
 import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
@@ -133,6 +134,7 @@ Future<ProviderContainer> _pumpHome(
   required _ScriptedAttendanceRepository attendanceRepository,
   BeaconConfigRepository? beaconConfigRepository,
   RecordsRepository? recordsRepository,
+  List<Override> extraOverrides = const [],
 }) async {
   final container = ProviderContainer(
     overrides: [
@@ -143,6 +145,7 @@ Future<ProviderContainer> _pumpHome(
       ),
       attendanceRepositoryProvider.overrideWithValue(attendanceRepository),
       recordsRepositoryProvider.overrideWithValue(recordsRepository ?? _EmptyRecordsRepository()),
+      ...extraOverrides,
     ],
   );
   addTearDown(container.dispose);
@@ -364,9 +367,12 @@ void main() {
     expect(find.text('이번달 출석률'), findsNothing);
   });
 
-  testWidgets('블루투스 꺼짐 상태에서 설정 열기 버튼이 렌더된다', (tester) async {
-    // 잡아야 할 잘못된 구현: 비콘 상태를 무시하고 항상 같은 화면을 그린다
-    // — BluetoothOff여도 "설정 열기" 버튼이 나타나지 않는다.
+  // Figma 실측(339:1676, 레이어 이름은 "코드팝업창"이지만 실제 내용은
+  // 별개의 블루투스 꺼짐 팝업)에서 처음 드러난 팝업 — 최초 구현은
+  // 인라인 안내문 + "설정 열기" 버튼이었다. 조정자가 팝업 쪽을 채택했다.
+  testWidgets('블루투스 꺼짐 상태에서 팝업이 뜬다', (tester) async {
+    // 잡아야 할 잘못된 구현: 예전처럼 인라인 안내문만 그리고 팝업을
+    // 띄우지 않는다.
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
     await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
@@ -374,7 +380,51 @@ void main() {
     scanner.emit(const BeaconBluetoothOff());
     await tester.pumpAndSettle();
 
-    expect(find.text('설정 열기'), findsOneWidget);
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+    expect(find.text('블루투스 설정하러 가기'), findsOneWidget);
+  });
+
+  testWidgets('블루투스 꺼짐이 아닌 상태로 바뀌면 팝업이 사라진다', (tester) async {
+    // 잡아야 할 잘못된 구현: 한 번 뜨면 비콘 상태가 바뀌어도 팝업이
+    // 계속 화면에 남는다(조건 없이 계속 렌더).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+
+    scanner.emit(const BeaconScanning());
+    await tester.pumpAndSettle();
+
+    expect(find.text('블루투스가 꺼져 있어요'), findsNothing);
+  });
+
+  testWidgets('블루투스 설정하러 가기를 누르면 설정 액션이 호출된다', (tester) async {
+    // 잡아야 할 잘못된 구현: 버튼은 렌더하지만 onPressed가 실제 설정
+    // 액션(openBluetoothSettingsProvider)을 부르지 않는다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    var callCount = 0;
+    await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+      extraOverrides: [
+        openBluetoothSettingsProvider.overrideWithValue(() async {
+          callCount++;
+        }),
+      ],
+    );
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('블루투스 설정하러 가기'));
+    await tester.pumpAndSettle();
+
+    expect(callCount, 1);
   });
 
   testWidgets('서버가 LATE를 돌려주면 완료 화면이 지각 처리되었습니다를 보여준다', (tester) async {
@@ -410,6 +460,30 @@ void main() {
 
     expect(find.text('출석 완료!'), findsOneWidget);
     expect(find.text('지각 처리되었습니다'), findsNothing);
+  });
+
+  // Figma 실측(339:1705)을 그대로 따른 결정 — 완료 팝업은 제목과 버튼
+  // 뿐이다. 기능명세서 17-6은 체크 아이콘·처리 시각·세션 이름도
+  // "표시 요소"로 명시하지만, 조정자가 이 화면에 한해 Figma를
+  // 우선하기로 결정했다(이슈 #11 `## 범위 → ### 제외` 참고) — 처리
+  // 시각·세션 이름은 기록 화면(#12)에서 확인한다.
+  testWidgets('출석완료 팝업은 Figma 그대로 제목과 확인 버튼만 보여준다', (tester) async {
+    // 잡아야 할 잘못된 구현: 명세서 17-6을 그대로 따라 체크 아이콘·처리
+    // 시각·세션 이름을 계속 보여준다(이전 구현).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석 완료!'), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsNothing);
+    expect(find.textContaining(_activeSession.sessionName), findsNothing);
   });
 
   testWidgets('완료 화면의 확인을 누르면 홈으로 돌아가고 입력란이 사라진다', (tester) async {

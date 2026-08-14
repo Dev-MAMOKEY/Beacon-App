@@ -151,6 +151,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool get _codeInputOpen =>
       _beaconState is BeaconDetected && _activeSession != null && !_attendanceDone;
 
+  /// 블루투스 꺼짐 팝업을 여는 유일한 조건. `_beaconState`가 이 상태를
+  /// 벗어나는 순간(사용자가 설정에서 블루투스를 켜는 등) 조건이 거짓이
+  /// 되어 팝업이 스스로 사라진다 — `_codeInputOpen`과 같은 오버레이
+  /// 패턴이다.
+  bool get _bluetoothOffPopupOpen => _beaconState is BeaconBluetoothOff;
+
   void _onOtpCompleted(String code) {
     unawaited(_submitCode(code));
   }
@@ -181,17 +187,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() => _submitting = false);
 
     switch (result) {
-      case CheckInSuccess(:final status, :final checkedAt):
+      case CheckInSuccess(:final status):
         setState(() {
           _attendanceDone = true;
           _needsManualRetry = false;
         });
-        await showAttendanceSuccessSheet(
-          context,
-          status: status,
-          checkedAt: checkedAt,
-          sessionName: session.sessionName,
-        );
+        await showAttendanceSuccessSheet(context, status: status);
       case CheckInInvalidCode():
         _otpController.shake();
         if (mounted) {
@@ -255,6 +256,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
           if (_codeInputOpen) _codeEntryOverlay(colors, typography),
+          if (_bluetoothOffPopupOpen) _bluetoothOffOverlay(colors, typography),
         ],
       ),
     );
@@ -264,7 +266,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return switch (_beaconState) {
       BeaconIdle() || BeaconScanning() => _scanningSection(colors, typography),
       BeaconDetected() => _detectedSection(colors, typography),
-      BeaconBluetoothOff() => _bluetoothOffSection(colors, typography),
+      // 안내 문구·버튼은 이제 별도 팝업(_bluetoothOffOverlay)이 담당한다 —
+      // 배경은 미감지 상태와 같은 동심원만 그린다.
+      BeaconBluetoothOff() => const BeaconPulse(state: BeaconPulseState.disconnected),
       BeaconPermissionDenied() => _permissionDeniedSection(colors, typography),
       BeaconOutOfRange() => _outOfRangeSection(colors, typography),
     };
@@ -367,23 +371,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _bluetoothOffSection(AppColors colors, AppTypography typography) {
-    return Column(
-      children: [
-        const BeaconPulse(state: BeaconPulseState.disconnected),
-        const SizedBox(height: 16),
-        Text(
-          '블루투스가 꺼져 있습니다. 설정에서 블루투스를 켜주세요.',
-          textAlign: TextAlign.center,
-          style: typography.body3.copyWith(color: colors.gray2),
+  /// 블루투스 꺼짐 팝업(Figma `339:1676`). 레이어 이름은 "코드팝업창"이지만
+  /// 실제 내용은 출석코드 팝업(`339:1683`)의 변형이 아니라 "블루투스가
+  /// 꺼져 있어요" + "블루투스 설정하러 가기" 버튼뿐인 별개 팝업이다 —
+  /// `339:1683`을 복제해 만들고 레이어 이름을 안 고친 흔적으로 보인다.
+  /// `_codeEntryOverlay`와 같은 오버레이 패턴: `_bluetoothOffPopupOpen`이
+  /// 거짓이 되는 순간(블루투스가 다시 켜지는 등) 별도 pop 처리 없이 그냥
+  /// 사라진다.
+  Widget _bluetoothOffOverlay(AppColors colors, AppTypography typography) {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.4),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: AppPopupCard(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '블루투스가 꺼져 있어요',
+                textAlign: TextAlign.center,
+                style: typography.title4.copyWith(color: colors.gray3),
+              ),
+              const SizedBox(height: 18),
+              AppButton(
+                label: '블루투스 설정하러 가기',
+                onPressed: () => ref.read(openBluetoothSettingsProvider)(),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 16),
-        AppButton.ghost(
-          label: '설정 열기',
-          size: ButtonSize.md,
-          onPressed: () => ref.read(openBluetoothSettingsProvider)(),
-        ),
-      ],
+      ),
     );
   }
 

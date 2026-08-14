@@ -15,6 +15,7 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.yellow,
     required this.red,
     required this.green,
+    required this.disconnectedGlow,
     required this.label,
   });
 
@@ -33,6 +34,12 @@ class AppColors extends ThemeExtension<AppColors> {
   /// 대체해 왔다 — 이 값을 뽑아낸 김에 그쪽도 이 토큰으로 갱신한다.
   final Color green;
 
+  /// 홈 화면 동심원의 미감지(disconnected) 상태 글로우·내부 원 색.
+  /// Figma 실측 `#94A8BD`(`339:1642`/`326:1587`) — 기존 `AppColors`에
+  /// 없던 값이라 재작업 1차에서는 `gray1`로 임시 대체했었다. 이 값은
+  /// 발명이 아니라 Figma에서 그대로 뽑아낸 값이라 토큰으로 승격한다.
+  final Color disconnectedGlow;
+
   final Color label;
 
   static const AppColors light = AppColors(
@@ -46,6 +53,7 @@ class AppColors extends ThemeExtension<AppColors> {
     yellow: Color(0xFFFBBF24),
     red: Color(0xFFFF5D5D),
     green: Color(0xFF16CE69),
+    disconnectedGlow: Color(0xFF94A8BD),
     label: Color(0xFF000000),
   );
 
@@ -61,6 +69,7 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? yellow,
     Color? red,
     Color? green,
+    Color? disconnectedGlow,
     Color? label,
   }) {
     return AppColors(
@@ -74,6 +83,7 @@ class AppColors extends ThemeExtension<AppColors> {
       yellow: yellow ?? this.yellow,
       red: red ?? this.red,
       green: green ?? this.green,
+      disconnectedGlow: disconnectedGlow ?? this.disconnectedGlow,
       label: label ?? this.label,
     );
   }
@@ -92,6 +102,7 @@ class AppColors extends ThemeExtension<AppColors> {
       yellow: Color.lerp(yellow, other.yellow, t)!,
       red: Color.lerp(red, other.red, t)!,
       green: Color.lerp(green, other.green, t)!,
+      disconnectedGlow: Color.lerp(disconnectedGlow, other.disconnectedGlow, t)!,
       label: Color.lerp(label, other.label, t)!,
     );
   }

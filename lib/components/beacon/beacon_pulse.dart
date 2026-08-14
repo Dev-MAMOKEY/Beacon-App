@@ -17,9 +17,10 @@ enum BeaconPulseState { connected, disconnected }
 /// - 바깥 래퍼 256×256, 글로우(블러 35) 230, 안쪽 원 192.
 /// - 감지됨: `#16CE69`(=[AppColors.green]) 100%/30%, 아이콘 `router-fill`,
 ///   라벨 `CONNETED`(디자인 표기 그대로 — 오타 아님).
-/// - 미감지: 아이콘 `router-line`, 라벨 `NOT CONNETED`. **Figma의 실제 색은
-///   `#94A8BD`이지만 이 값은 `AppColors`에 없는 토큰 밖 색이다** — 하드코딩
-///   대신 기존 `gray1` 토큰으로 대체했다(조정자 확인 대기, 리포트 참고).
+/// - 미감지: 아이콘 `router-line`, 라벨 `NOT CONNETED`, 색은
+///   `#94A8BD`(=[AppColors.disconnectedGlow]) — Figma에서 그대로 뽑아낸
+///   값을 토큰으로 승격했다(1차 재작업에서는 토큰 밖이라 `gray1`로
+///   임시 대체했었다).
 /// - 아이콘-라벨 세로 배치, 간격 6, 라벨 스타일은 `body1`(18px Medium) —
 ///   `title6`이 아니다.
 class BeaconPulse extends StatelessWidget {
@@ -49,10 +50,8 @@ class BeaconPulse extends StatelessWidget {
         colors: colors,
       ),
       BeaconPulseState.disconnected => _Pulse(
-        // Figma 실측 색은 #94A8BD이나 AppColors에 없는 토큰 밖 값이라
-        // 하드코딩하지 않고 기존 gray1로 대체했다 — 리포트에 플래그.
-        glowColor: colors.gray1,
-        innerColor: colors.gray1.withValues(alpha: 0.3),
+        glowColor: colors.disconnectedGlow,
+        innerColor: colors.disconnectedGlow.withValues(alpha: 0.3),
         iconAsset: 'assets/icons/router-line.svg',
         label: 'NOT CONNETED',
         semanticLabel: '비콘을 찾는 중입니다',
