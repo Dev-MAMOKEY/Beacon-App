@@ -44,6 +44,12 @@ final showAdminTabProvider = Provider<bool>((ref) => false);
 /// `@visibleForTesting`으로 공개하는 이유도 그 비교를 가능하게 하기
 /// 위해서다(라이브러리 단위 private라 테스트 파일에서는 애초에 접근할
 /// 수 없다).
+///
+/// **경고**: 이 집합은 정확한 문자열 일치만 본다. 매개변수가 있는 경로
+/// (예: `/records/:id`)는 이 형태로 넣을 수 없다 — 템플릿 문자열이
+/// `/records/42` 같은 실제 경로와 절대 같아지지 않아 조용히 `/home`으로
+/// 튕긴다. 첫 매개변수 경로를 추가하는 사람은 이 집합을 패턴 매칭으로
+/// 바꿔야 한다.
 @visibleForTesting
 const Set<String> readyAllowedLocations = {
   AppRoutes.home,
@@ -59,14 +65,29 @@ const Set<String> readyAllowedLocations = {
 /// 바로 보여줘야 하므로 이 지연을 적용하지 않는다.
 const Duration minSplashDuration = Duration(milliseconds: 1500);
 
+/// `/admin` 자신뿐 아니라 그 아래 모든 경로를 관리자 전용으로 본다.
+/// 지금은 `/admin` 하나뿐이라 정확히 일치하는 것과 차이가 없지만, Phase 3가
+/// `/admin/settings` 같은 자식을 추가하고 `readyAllowedLocations`에 넣는
+/// 순간 정확히-일치 검사는 그 자식들을 통과시켜 버린다 — 접두사 규칙으로
+/// 미리 막아 둔다.
+///
+/// `@visibleForTesting`으로 공개하는 이유: `readyAllowedLocations`에
+/// `/admin`의 자식이 아직 하나도 없어서, `computeRedirect`를 블랙박스로만
+/// 테스트하면 접두사 규칙과 정확히-일치 규칙이 오늘 시점에는 결과가
+/// 똑같다(둘 다 "집합에 없으니 /home") — 그래서 이 함수 자체를 직접
+/// 테스트해야 두 구현을 구분할 수 있다.
+@visibleForTesting
+bool isAdminRoute(String location) =>
+    location == AppRoutes.admin || location.startsWith('${AppRoutes.admin}/');
+
 /// `SessionReady`의 목적지를 고른다. 관리자 탭은 `showAdmin`이 false인
-/// 동안 `/admin` 자체를 허용 집합에서 빠진 것처럼 취급한다 — 가드를
-/// `computeRedirect` 밖(예: GoRouter의 `redirect:` 클로저)에 따로 두면
-/// `computeRedirect`를 직접 부르는 단위 테스트가 그 가드를 전혀 보지
-/// 못한다. 가드 줄을 통째로 지워도 그 단위 테스트들은 계속 초록색일
-/// 것이고, 실제로 그런 일이 있었다.
+/// 동안 `/admin`(과 그 하위 경로) 자체를 허용 집합에서 빠진 것처럼
+/// 취급한다 — 가드를 `computeRedirect` 밖(예: GoRouter의 `redirect:`
+/// 클로저)에 따로 두면 `computeRedirect`를 직접 부르는 단위 테스트가 그
+/// 가드를 전혀 보지 못한다. 가드 줄을 통째로 지워도 그 단위 테스트들은
+/// 계속 초록색일 것이고, 실제로 그런 일이 있었다.
 String _readyTarget({required String matchedLocation, required bool showAdmin}) {
-  if (matchedLocation == AppRoutes.admin && !showAdmin) {
+  if (isAdminRoute(matchedLocation) && !showAdmin) {
     return AppRoutes.home;
   }
   return readyAllowedLocations.contains(matchedLocation) ? matchedLocation : AppRoutes.home;
@@ -128,9 +149,17 @@ String? computeRedirect({
 /// 순간에도 redirect가 다시 평가되도록 한 번 notifyListeners()한다 —
 /// go_router의 redirect는 리스너블이 알리거나 네비게이션이 시도될 때만
 /// 재평가되고 타이머로 저절로 재평가되지 않기 때문이다.
+///
+/// `showAdminTabProvider`도 함께 구독한다 — 그러지 않으면 Phase 3에서 이
+/// Provider가 실제 role 조회로 바뀐 뒤, `/admin`에 이미 들어가 있는
+/// 사용자의 role이 회수돼도 아무 redirect도 재평가되지 않는다. `AppShell`은
+/// `ref.watch`라 탭은 바로 사라지지만, 화면은 그대로 남고 선택된 탭 없이
+/// 관리자 화면만 계속 보이게 된다 — 그 상태에서 뭔가 다른 내비게이션을
+/// 시도해야 비로소 튕겨난다.
 class _SessionListenable extends ChangeNotifier {
   _SessionListenable(this._ref) : launchedAt = DateTime.now() {
     _ref.listen(sessionControllerProvider, (_, _) => notifyListeners());
+    _ref.listen(showAdminTabProvider, (_, _) => notifyListeners());
     _minDurationTimer = Timer(minSplashDuration, notifyListeners);
   }
 
@@ -178,14 +207,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // 각 자리표시자는 해당 태스크에서 실제 화면으로 교체된다.
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) {
-          // state.matchedLocation이 아니라 state.uri다 — go_router가
-          // context.push()/router.push()로 넣은 임시(Imperative) 매치는
+          // state.matchedLocation이 아니라 state.uri.path다.
+          // matchedLocation을 안 쓰는 이유: go_router가 context.push()/
+          // router.push()로 넣은 임시(Imperative) 매치는
           // ShellRouteMatch.matchedLocation(셸 자신의 선언적 매치 위치,
           // 예: '/profile')을 갱신하지 않고 uri/fullPath/pathParameters만
           // 갱신한다. matchedLocation을 쓰면 /profile/password로 push한
           // 뒤에도 이 값이 '/profile'에 멈춰 있다 — 직접 go_router 소스
           // (match.dart의 ShellRouteMatch.buildState)로 확인했다.
-          return AppShell(navigationShell: navigationShell, currentLocation: state.uri.toString());
+          // state.uri.toString() 대신 .path인 이유: toString()은 쿼리
+          // 문자열도 그대로 붙여 돌려준다(`/profile/password?source=…`)
+          // — _titleFor의 정확 일치 switch가 그 값을 인식하지 못해
+          // 제목이 비어버린다. .path는 쿼리·프래그먼트를 뺀 경로만 준다.
+          return AppShell(navigationShell: navigationShell, currentLocation: state.uri.path);
         },
         branches: [
           StatefulShellBranch(

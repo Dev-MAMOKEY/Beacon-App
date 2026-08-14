@@ -59,7 +59,15 @@ class AppTopBar extends StatelessWidget implements PreferredSizeWidget {
                           ),
                   ),
                 ),
-                SvgPicture.asset('assets/icons/notification.svg', width: 24, height: 24),
+                SvgPicture.asset(
+                  'assets/icons/notification.svg',
+                  width: 24,
+                  height: 24,
+                  // 자산 자체에 #787878(=gray2)이 박혀 있지만 그대로
+                  // 믿지 않는다 — AppLogo와 같은 이유(주석 참고). 테마의
+                  // gray2를 정본으로 삼는다.
+                  colorFilter: ColorFilter.mode(colors.gray2, BlendMode.srcIn),
+                ),
               ],
             ),
           ),

@@ -189,20 +189,32 @@ void main() {
       expect(result, isNull);
     });
 
-    test('Ready가 허용 집합 밖(/nonsense)이면 /home으로 보낸다', () {
-      final result = redirect(
-        session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
-        matchedLocation: '/nonsense',
-      );
-      expect(result, AppRoutes.home);
+    test('Ready가 허용 집합 밖이면 /home으로 보낸다', () {
+      // 서로 다른 임의 경로 두 개를 확인한다 — 하나만 확인하면
+      // "이 리터럴 하나만 걸러내고 나머지는 다 통과시키는" 구현도
+      // 우연히 통과해 버린다.
+      for (final bogus in ['/nonsense', '/totally-different-bogus-path']) {
+        final result = redirect(
+          session: const AsyncValue<SessionState>.data(SessionReady(_profileWithClub)),
+          matchedLocation: bogus,
+        );
+        expect(result, AppRoutes.home, reason: '$bogus는 허용 집합 밖이라 /home으로 가야 한다');
+      }
     });
 
-    test('SignedOut이 /records에 있으면 /login으로 보낸다 — 허용 집합 확장은 Ready에만 적용된다', () {
-      final result = redirect(
-        session: const AsyncValue<SessionState>.data(SessionSignedOut()),
-        matchedLocation: AppRoutes.records,
-      );
-      expect(result, AppRoutes.login);
+    test('SignedOut은 허용 집합의 어떤 위치에 있어도 /login으로 보낸다 — 허용 집합 확장은 Ready에만 적용된다', () {
+      // /records 하나만 확인하면 "SignedOut일 때 /records만 특별히
+      // 막고 나머지(/home, /admin, /profile)는 통과시키는" 구현도 그
+      // 하나에 대해서는 우연히 맞아떨어져 통과해 버린다 — 실제로 그런
+      // 잘못된 구현으로 이 테스트 하나만 돌렸더니 통과했다(아래 참고).
+      // 허용 집합 전체를 순회해야 그 틈을 잡는다.
+      for (final location in readyAllowedLocations) {
+        final result = redirect(
+          session: const AsyncValue<SessionState>.data(SessionSignedOut()),
+          matchedLocation: location,
+        );
+        expect(result, AppRoutes.login, reason: 'SignedOut은 $location에서도 /login으로 가야 한다');
+      }
     });
   });
 
@@ -226,6 +238,19 @@ void main() {
         showAdmin: true,
       );
       expect(result, isNull);
+    });
+
+    // isAdminRoute 자체를 직접 테스트한다 — computeRedirect를 블랙박스로만
+    // 찔러 보면, readyAllowedLocations에 /admin의 자식이 아직 하나도
+    // 없어서 접두사 규칙과 정확히-일치 규칙이 오늘 시점엔 결과가 똑같다
+    // (둘 다 "집합에 없으니 /home"). Phase 3가 /admin/settings 같은
+    // 자식을 허용 집합에 추가하는 순간에만 차이가 드러나는데, 그건 아직
+    // 존재하지 않는 라우트라 지어낼 수 없다 — 그래서 이 함수 자체를
+    // 직접 고정해 둔다.
+    test('/admin 뿐 아니라 그 하위 경로도 관리자 경로로 취급한다', () {
+      expect(isAdminRoute('/admin/anything'), isTrue);
+      expect(isAdminRoute(AppRoutes.admin), isTrue);
+      expect(isAdminRoute(AppRoutes.records), isFalse);
     });
   });
 }
