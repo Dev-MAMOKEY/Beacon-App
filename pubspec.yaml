@@ -40,6 +40,8 @@ dependencies:
   flutter_secure_storage: ^11.0.0
   flutter_dotenv: ^6.0.1
   json_annotation: ^4.12.0
+  dchs_flutter_beacon: ^0.6.10
+  flutter_svg: ^2.3.0
 
 dev_dependencies:
   flutter_test:

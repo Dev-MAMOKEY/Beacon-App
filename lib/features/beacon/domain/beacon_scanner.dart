@@ -1,0 +1,126 @@
+/// BLE 비콘 감지 레이어의 순수 계약. 실제 BLE 하드웨어(dchs_flutter_beacon)나
+/// 테스트용 스크립트는 전부 [BeaconScanner]를 구현해 이 상태들만 방출한다 —
+/// 화면은 어떤 구현인지 몰라도 된다.
+sealed class BeaconScanState {
+  const BeaconScanState();
+}
+
+/// 스캔을 시작하기 전의 기본 상태. [BeaconScanner] 구현체가 직접 방출하지는
+/// 않는다 — 화면이 `watch()`를 부르기 전 자신의 초기값으로 쓴다.
+class BeaconIdle extends BeaconScanState {
+  const BeaconIdle();
+
+  @override
+  bool operator ==(Object other) => other is BeaconIdle;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() => 'BeaconIdle';
+}
+
+/// 블루투스 자체가 꺼져 있어 ranging을 진행할 수 없다.
+class BeaconBluetoothOff extends BeaconScanState {
+  const BeaconBluetoothOff();
+
+  @override
+  bool operator ==(Object other) => other is BeaconBluetoothOff;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() => 'BeaconBluetoothOff';
+}
+
+/// 스캔에 필요한 권한(위치 등)이 거부됐다.
+class BeaconPermissionDenied extends BeaconScanState {
+  const BeaconPermissionDenied();
+
+  @override
+  bool operator ==(Object other) => other is BeaconPermissionDenied;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() => 'BeaconPermissionDenied';
+}
+
+/// 스캔 중이지만 아직 [BeaconDetected]로 안정화되지 않았다 — 신호가 아예
+/// 없거나, 임계값 이상이지만 안정화 시간을 채우는 중인 경우 둘 다 포함한다.
+class BeaconScanning extends BeaconScanState {
+  const BeaconScanning();
+
+  @override
+  bool operator ==(Object other) => other is BeaconScanning;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() => 'BeaconScanning';
+}
+
+/// `rssi >= rssiThreshold`가 `stabilizationSeconds` 이상 연속으로 유지되어
+/// 출석 인정 대상으로 확정됐다.
+class BeaconDetected extends BeaconScanState {
+  const BeaconDetected(this.rssi);
+
+  final int rssi;
+
+  @override
+  bool operator ==(Object other) => other is BeaconDetected && other.rssi == rssi;
+
+  @override
+  int get hashCode => Object.hash(runtimeType, rssi);
+
+  @override
+  String toString() => 'BeaconDetected(rssi: $rssi)';
+}
+
+/// [BeaconDetected] 이후 신호가 임계값 아래로 떨어졌다.
+class BeaconOutOfRange extends BeaconScanState {
+  const BeaconOutOfRange();
+
+  @override
+  bool operator ==(Object other) => other is BeaconOutOfRange;
+
+  @override
+  int get hashCode => runtimeType.hashCode;
+
+  @override
+  String toString() => 'BeaconOutOfRange';
+}
+
+/// 스캔 하나를 설정하는 값. 클럽마다 서버가 내려주는 [BeaconConfig]로부터
+/// 채워진다.
+class BeaconScanConfig {
+  const BeaconScanConfig({
+    required this.uuid,
+    this.rssiThreshold = -70,
+    this.stabilizationSeconds = 3,
+  });
+
+  /// 우리 클럽 비콘의 proximity UUID. 대소문자는 비교 시 무시한다.
+  final String uuid;
+
+  /// 이 값 이상이어야 "감지됨" 후보로 본다.
+  final int rssiThreshold;
+
+  /// [rssiThreshold] 이상이 연속으로 유지되어야 하는 최소 시간(초).
+  final int stabilizationSeconds;
+}
+
+/// BLE 비콘 감지를 추상화한 계약. 화면과 컨트롤러는 이 인터페이스에만
+/// 의존한다 — 실 구현은 [FlutterBeaconScanner](data), 테스트는
+/// [FakeBeaconScanner](data)를 쓴다.
+abstract interface class BeaconScanner {
+  /// [config]로 스캔을 시작하고 상태 변화를 흘려보낸다. 새로 부르면 이전
+  /// 스캔은 정리되고 새 스캔으로 대체된다.
+  Stream<BeaconScanState> watch(BeaconScanConfig config);
+
+  /// 스캔을 멈추고 관련 구독을 전부 해제한다.
+  Future<void> stop();
+}
