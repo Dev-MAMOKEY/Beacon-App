@@ -21,17 +21,16 @@ beacon_lib.RangingResult _ranging(List<(String uuid, int rssi)> beacons) {
   });
 }
 
-/// 테스트가 직접 흐르게 하는 가짜 시계. `FlutterBeaconScanner`는 이 시계로만
-/// "지금"을 알아내므로, 실제로 몇 초를 기다리지 않고도 안정화 판정을
-/// 결정적으로 구동할 수 있다.
-class _FakeClock {
-  _FakeClock(this._now);
+/// 테스트가 직접 흐르게 하는 가짜 경과 시계. `FlutterBeaconScanner`는
+/// `watch()`마다 새 단조 시계(실기기에서는 `Stopwatch`)를 요청하므로, 이
+/// 클래스도 "0부터 시작하는 경과 시간"만 제공한다 — 벽시계 개념 자체가
+/// 없다.
+class _FakeElapsedClock {
+  Duration _elapsed = Duration.zero;
 
-  DateTime _now;
+  Duration call() => _elapsed;
 
-  DateTime call() => _now;
-
-  void advance(Duration duration) => _now = _now.add(duration);
+  void advance(Duration duration) => _elapsed += duration;
 }
 
 /// [FlutterBeaconScanner]가 실제 BLE 대신 이 더블들을 쓰도록 배선한다.
@@ -43,49 +42,83 @@ class _Harness {
   _Harness({
     beacon_lib.BluetoothState initialBluetoothState = beacon_lib.BluetoothState.stateOn,
     bool initializeSucceeds = true,
+    Future<bool> Function()? initializeOverride,
     this.authorization = beacon_lib.AuthorizationStatus.allowed,
     this.authorizationAfterRequest,
-    DateTime? startAt,
-  }) : clock = _FakeClock(startAt ?? DateTime(2026, 8, 14)) {
+    this.requestAuthorizationGate,
+    Completer<void>? rangingCancelGate,
+  }) {
     scanner = FlutterBeaconScanner(
       rangingStreamFactory: (regions) {
         lastRegions = regions;
         rangingStarts++;
-        final controller = StreamController<beacon_lib.RangingResult>(onCancel: () => rangingCancelCount++);
+        final controller = StreamController<beacon_lib.RangingResult>(
+          onCancel: () async {
+            rangingCancelCount++;
+            if (rangingCancelGate != null) {
+              await rangingCancelGate.future;
+            }
+          },
+        );
         rangingControllers.add(controller);
         return controller.stream;
       },
       bluetoothStateStreamFactory: () => bluetoothController.stream,
       currentBluetoothState: () async => initialBluetoothState,
-      initializeAndCheckScanning: () async => initializeSucceeds,
+      initializeAndCheckScanning: () {
+        initializeCalls++;
+        return (initializeOverride ?? (() async => initializeSucceeds))();
+      },
       authorizationStatus: () async => authorization,
       requestAuthorization: () async {
         requestAuthorizationCallCount++;
+        final gate = requestAuthorizationGate;
+        if (gate != null) {
+          await gate.future;
+        }
         if (authorizationAfterRequest != null) {
           authorization = authorizationAfterRequest!;
         }
         return true;
       },
-      now: clock.call,
+      createElapsedClock: _makeElapsedClock,
     );
   }
+
+  final Completer<void>? requestAuthorizationGate;
 
   /// 현재 권한 상태. `requestAuthorization`이 불리면 [authorizationAfterRequest]로
   /// 바뀐다 — "요청 후 사용자가 승인/거부했다"를 흉내낸다.
   beacon_lib.AuthorizationStatus authorization;
   final beacon_lib.AuthorizationStatus? authorizationAfterRequest;
 
-  final _FakeClock clock;
   late final FlutterBeaconScanner scanner;
-  final StreamController<beacon_lib.BluetoothState> bluetoothController = StreamController<beacon_lib.BluetoothState>();
+  // broadcast여야 한다 — 한 하니스가 여러 번 watch()되면(예: region 캐싱
+  // 회귀 테스트) 매번 새로 구독이 걸리는데, 단일 구독 스트림은 한 번
+  // 취소된 뒤 다시 리슨하면 "Stream has already been listened to"로 죽는다.
+  final StreamController<beacon_lib.BluetoothState> bluetoothController =
+      StreamController<beacon_lib.BluetoothState>.broadcast();
   final List<StreamController<beacon_lib.RangingResult>> rangingControllers = [];
+  final List<_FakeElapsedClock> _elapsedClocks = [];
   List<beacon_lib.Region>? lastRegions;
   int rangingStarts = 0;
   int rangingCancelCount = 0;
   int requestAuthorizationCallCount = 0;
+  int initializeCalls = 0;
   final List<BeaconScanState> states = [];
 
   StreamController<beacon_lib.RangingResult> get currentRanging => rangingControllers.last;
+
+  /// 매 `watch()`마다 새 경과 시계를 만든다 — 실제 구현이 매번 새
+  /// `Stopwatch`를 요청하는 것과 동일하다. [clock]은 항상 "가장 최근에
+  /// 만들어진(=지금 활성 세션의)" 시계를 가리킨다.
+  Duration Function() _makeElapsedClock() {
+    final c = _FakeElapsedClock();
+    _elapsedClocks.add(c);
+    return c.call;
+  }
+
+  _FakeElapsedClock get clock => _elapsedClocks.last;
 
   /// [config]로 스캔을 시작하고, 최초 초기화(권한·초기 블루투스 상태
   /// 확인)가 끝나 ranging 구독이 실제로 걸릴 때까지 기다린다.
@@ -101,6 +134,24 @@ class _Harness {
   void emitEmpty() => currentRanging.add(_ranging(const []));
 
   Future<void> settle() => pumpEventQueue();
+
+  /// 좋은 신호가 [duration] 동안 끊기지 않고 유지된 것처럼 1초 간격으로
+  /// 프레임을 흘려보낸다 — 실제 ranging이 대략 1초에 한 번 이벤트를
+  /// 내보내는 주기를 흉내낸다(`BeaconScanConfig.maxSampleGap` 기본값
+  /// 2초보다 촘촘해야 "침묵"으로 오인되지 않는다). 스트릭을 시작할 첫
+  /// 프레임은 호출 전에 직접 보내야 한다 — 이 메서드는 그 이후
+  /// [duration]만큼만 채운다.
+  Future<void> holdGoodFor(Duration duration, {int rssi = -60, String uuid = _uuid}) async {
+    var remaining = duration;
+    const step = Duration(seconds: 1);
+    while (remaining > Duration.zero) {
+      final advance = remaining < step ? remaining : step;
+      clock.advance(advance);
+      remaining -= advance;
+      emitGood(rssi, uuid: uuid);
+      await settle();
+    }
+  }
 }
 
 void main() {
@@ -126,9 +177,7 @@ void main() {
 
     h.emitGood(-60); // t=0
     await h.settle();
-    h.clock.advance(const Duration(seconds: 3));
-    h.emitGood(-55); // t=3, 연속 3초 이상 임계값 이상
-    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3), rssi: -55); // t=1,2,3 — 연속 3초 이상 임계값 이상
 
     expect(h.states.last, isA<BeaconDetected>());
     expect((h.states.last as BeaconDetected).rssi, -55);
@@ -162,10 +211,8 @@ void main() {
     );
 
     // 리셋 이후에도 실제로 3초를 연속으로 채우면 정상적으로 Detected가
-    // 나온다는 것까지 확인한다.
-    h.clock.advance(const Duration(seconds: 3));
-    h.emitGood(-60); // t=6, 새 스트릭(t=3) 기준 연속 3초
-    await h.settle();
+    // 나온다는 것까지 1초 간격으로 확인한다.
+    await h.holdGoodFor(const Duration(seconds: 3)); // t=4,5,6 — 새 스트릭(t=3) 기준 연속 3초
 
     expect(h.states.last, isA<BeaconDetected>());
   });
@@ -178,15 +225,188 @@ void main() {
 
     h.emitGood(-60); // t=0
     await h.settle();
-    h.clock.advance(const Duration(seconds: 3));
-    h.emitGood(-60); // t=3, Detected
-    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3)); // t=1,2,3 -> Detected
     expect(h.states.last, isA<BeaconDetected>());
 
     h.emitBad(); // 신호가 끊김
     await h.settle();
 
     expect(h.states.last, isA<BeaconOutOfRange>());
+  });
+
+  test('OutOfRange는 안정적이다 — 신호 부재가 계속되는 동안 Scanning으로 돌아가지 않는다', () async {
+    // 잡아야 할 잘못된 구현(이번 라운드 이전 동작): Detected 이후 첫 나쁜
+    // 프레임에서 OutOfRange를 방출한 뒤 내부 플래그를 곧장 되돌려, 바로
+    // 다음 나쁜 프레임에서 Scanning으로 되돌아간다.
+    final h = _Harness();
+    await h.start(config);
+
+    h.emitGood(-60); // t=0
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3)); // -> Detected
+    expect(h.states.last, isA<BeaconDetected>());
+
+    h.emitBad();
+    await h.settle();
+    expect(h.states.last, isA<BeaconOutOfRange>());
+
+    h.emitBad(); // 두 번째 연속 나쁜 프레임
+    await h.settle();
+    expect(
+      h.states.last,
+      isA<BeaconOutOfRange>(),
+      reason: '신호 부재가 계속되는 동안은 계속 OutOfRange여야 한다 — Scanning으로 깜빡이면 안 된다',
+    );
+
+    h.emitBad(); // 세 번째
+    await h.settle();
+    expect(h.states.last, isA<BeaconOutOfRange>());
+  });
+
+  test('OutOfRange 이후 재획득해도 스트릭이 리셋돼 있어 곧장 Detected가 나오지 않는다', () async {
+    // 잡아야 할 잘못된 구현: OutOfRange를 방출하면서도 스트릭 시작 시각을
+    // 지우지 않는다 — 그러면 재획득 시 옛 스트릭의 잔여 경과 시간이 남아
+    // 있어, 좋은 프레임 단 하나로도 곧장 Detected가 나와 버린다.
+    final h = _Harness();
+    await h.start(config);
+
+    h.emitGood(-60); // t=0
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3)); // -> Detected
+    expect(h.states.last, isA<BeaconDetected>());
+
+    h.emitEmpty(); // 신호 소실 -> OutOfRange
+    await h.settle();
+    expect(h.states.last, isA<BeaconOutOfRange>());
+
+    h.clock.advance(const Duration(seconds: 1)); // 아직 3초 미만
+    h.emitGood(-60); // 재획득된 지 1초
+    await h.settle();
+
+    expect(
+      h.states.last,
+      isA<BeaconScanning>(),
+      reason: '재획득 직후 단 1초 만에 Detected가 나오면 스트릭이 리셋되지 않은 것이다',
+    );
+  });
+
+  test('스트릭 리셋은 빈 프레임과 다른 UUID 프레임에도 똑같이 적용된다', () async {
+    // 잡아야 할 잘못된 구현: 숫자로 된 임계값 미달 rssi에서만 스트릭을
+    // 리셋하고, 빈 프레임이나 다른 UUID만 잡힌 프레임(둘 다 rssi 자체가
+    // 없다)에서는 리셋을 건너뛴다. 프레임 간격을 전부 1초로 좁게 유지하는
+    // 이유는, 2초를 넘는 간격은 `maxSampleGap`(침묵 감지)이 별도로 스트릭을
+    // 리셋시켜 이 테스트가 원래 노리는 "리셋 사유별 분기 누락"을 가려버리기
+    // 때문이다 — 이 테스트는 오직 명시적인 나쁜 프레임 리셋 경로만 본다.
+    final h = _Harness();
+    await h.start(config);
+
+    h.emitGood(-60); // t=0, 스트릭 시작
+    await h.settle();
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitEmpty(); // t=1, 빈 프레임 -> 리셋되어야 함
+    await h.settle();
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitGood(-60); // t=2, 리셋됐다면 방금 시작한 스트릭(0초)
+    await h.settle();
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitGood(-60); // t=3, 리셋됐다면 재획득 후 1초뿐
+    await h.settle();
+
+    expect(
+      h.states.last,
+      isA<BeaconScanning>(),
+      reason: '빈 프레임도 스트릭을 리셋해야 한다 — 리셋되지 않으면 t=0부터 누적 3초로 착각해 Detected가 나온다',
+    );
+
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitGood(-60, uuid: _otherUuid); // t=4, 다른 UUID -> 리셋되어야 함
+    await h.settle();
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitGood(-60); // t=5, 리셋됐다면 방금 시작한 스트릭(0초)
+    await h.settle();
+    h.clock.advance(const Duration(seconds: 1));
+    h.emitGood(-60); // t=6, 리셋됐다면 재획득 후 1초뿐
+    await h.settle();
+
+    expect(
+      h.states.last,
+      isA<BeaconScanning>(),
+      reason: '다른 UUID만 잡힌 프레임도 스트릭을 리셋해야 한다',
+    );
+  });
+
+  test('한동안 침묵하다 온 단 하나의 좋은 프레임은 안정화를 통과시키지 못한다', () async {
+    // 잡아야 할 잘못된 구현(이번 라운드 이전 동작): 이전 좋은 샘플과의
+    // 간격을 보지 않고 스트릭 시작 시각만으로 경과 시간을 계산한다 —
+    // 그러면 10분 동안 아무 이벤트도 없다가 온 프레임 하나가 "스트릭이
+    // 10분 지속됐다"고 착각한다.
+    final h = _Harness();
+    await h.start(config);
+
+    h.emitGood(-60); // t=0, 스트릭 시작
+    await h.settle();
+    h.clock.advance(const Duration(minutes: 10)); // 완전한 침묵(이벤트 자체가 없음)
+    h.emitGood(-60); // t=600s, 첫 샘플 이후 10분간 아무 프레임도 없었다
+    await h.settle();
+
+    expect(
+      h.states.last,
+      isA<BeaconScanning>(),
+      reason: '침묵 뒤에 온 프레임 하나로 안정화 시간이 채워진 것처럼 보이면 안 된다',
+    );
+  });
+
+  test('rssi가 0 이상(유효하지 않은 판독값)이면 나쁜 프레임으로 취급한다', () async {
+    // 잡아야 할 잘못된 구현: rssi 부호를 확인하지 않아 -1(플러그인이 값을
+    // 못 읽었을 때 채우는 기본값) 같은 값도 임계값(-70) 이상이라는
+    // 이유만으로 좋은 프레임으로 인정한다.
+    final h = _Harness();
+    await h.start(config);
+
+    h.emitGood(-1); // t=0, 유효하지 않은 판독값(신호 없음의 기본값)
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3), rssi: -1);
+
+    expect(
+      h.states,
+      isNot(contains(isA<BeaconDetected>())),
+      reason: '유효하지 않은 rssi가 아무리 오래 지속돼도 Detected로 이어지면 안 된다',
+    );
+  });
+
+  test('rssi가 임계값과 정확히 같으면 좋은 프레임으로 인정한다(경계값)', () async {
+    // 잡아야 할 잘못된 구현: `rssi >= threshold`가 아니라 `rssi > threshold`를
+    // 써서, 정확히 임계값과 같은 값을 나쁜 프레임으로 잘못 취급한다.
+    final h = _Harness();
+    await h.start(config); // rssiThreshold: -70
+
+    h.emitGood(-70); // t=0, 정확히 임계값
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3), rssi: -70);
+
+    expect(h.states.last, isA<BeaconDetected>());
+  });
+
+  test('stabilizationSeconds 설정값을 실제로 사용한다(하드코딩된 3초가 아니다)', () async {
+    // 잡아야 할 잘못된 구현: config.stabilizationSeconds를 무시하고 3초를
+    // 하드코딩한다.
+    const customConfig = BeaconScanConfig(uuid: _uuid, rssiThreshold: -70, stabilizationSeconds: 5);
+    final h = _Harness();
+    await h.start(customConfig);
+
+    h.emitGood(-60); // t=0
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3)); // t=1,2,3 — 하드코딩된 3초라면 여기서 이미 통과
+
+    expect(
+      h.states.last,
+      isA<BeaconScanning>(),
+      reason: '설정은 5초인데 3초 만에 Detected가 나오면 하드코딩된 것이다',
+    );
+
+    await h.holdGoodFor(const Duration(seconds: 2)); // t=4,5 — 총 5초
+
+    expect(h.states.last, isA<BeaconDetected>());
   });
 
   test('블루투스가 꺼지면 BluetoothOff로 전이하고 ranging 구독을 취소한다', () async {
@@ -226,11 +446,63 @@ void main() {
     // 재개된 구독이 실제로 살아 있는지, 새 프레임을 처리하는지까지 확인한다.
     h.emitGood(-60);
     await h.settle();
-    h.clock.advance(const Duration(seconds: 3));
-    h.emitGood(-60);
-    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3));
 
     expect(h.states.last, isA<BeaconDetected>());
+  });
+
+  test('권한이 거부된 상태에서 블루투스를 껐다 켜도 재확인 없이 곧장 스캐닝하지 않는다', () async {
+    // 잡아야 할 잘못된 구현: 재개(on) 분기가 곧장 _startRanging()을 불러,
+    // 그 사이 권한이 여전히 거부 상태인지 다시 확인하지 않는다.
+    final h = _Harness(
+      initializeSucceeds: false,
+      authorization: beacon_lib.AuthorizationStatus.denied,
+    );
+    await h.start(config);
+    expect(h.states.last, isA<BeaconPermissionDenied>());
+    expect(h.rangingStarts, 0);
+
+    h.bluetoothController.add(beacon_lib.BluetoothState.stateOff);
+    await h.settle();
+    expect(h.states.last, isA<BeaconBluetoothOff>());
+
+    h.bluetoothController.add(beacon_lib.BluetoothState.stateOn);
+    await h.settle();
+
+    expect(
+      h.states.last,
+      isA<BeaconPermissionDenied>(),
+      reason: '권한이 여전히 거부된 상태이므로 재개해도 다시 거부여야 한다 — 곧장 Scanning으로 건너뛰면 안 된다',
+    );
+    expect(h.rangingStarts, 0, reason: '권한 없이 ranging을 시작하면 안 된다');
+  });
+
+  test('블루투스가 꺼지면 초기화 경쟁으로 생긴 옛 시도는 ranging을 시작하지 못한다', () async {
+    // 잡아야 할 잘못된 구현: 초기화 시도에 세대를 매기지 않아, 블루투스가
+    // 꺼졌다 다시 켜지는 사이 뒤늦게 끝난 옛 초기화 시도도 그대로
+    // ranging을 시작해 버린다 — off 핸들러는 "그 순간" 추적 중이던 구독
+    // 하나만 취소하므로, 이렇게 생긴 구독은 아무도 취소하지 않는다.
+    final gate = Completer<bool>();
+    final h = _Harness(initializeOverride: () => gate.future);
+
+    await h.start(config); // gen=1: initializeAndCheckScanning()에서 블록
+    expect(h.initializeCalls, 1);
+
+    h.bluetoothController.add(beacon_lib.BluetoothState.stateOff);
+    await h.settle();
+    expect(h.states.last, isA<BeaconBluetoothOff>());
+
+    h.bluetoothController.add(beacon_lib.BluetoothState.stateOn);
+    await h.settle();
+    expect(h.initializeCalls, 2, reason: '재개는 초기화를 처음부터 다시 시도해야 한다');
+
+    gate.complete(true); // gen=1(낡음)과 gen=2(현재) 둘 다 풀려난다
+
+    await h.settle();
+
+    expect(h.rangingStarts, 1, reason: '세대가 낡은 시도는 ranging을 시작하면 안 된다');
+    expect(h.rangingCancelCount, 0, reason: '살아있는 구독이 하나뿐이면 취소도 없어야 한다');
+    expect(h.states.last, isA<BeaconScanning>());
   });
 
   test('다른 UUID의 비콘은 무시한다', () async {
@@ -253,15 +525,31 @@ void main() {
     expect(h.states.last, isA<BeaconScanning>());
   });
 
+  test('UUID 비교는 하이픈 유무와 대소문자를 모두 무시한다', () async {
+    // 잡아야 할 잘못된 구현: 대소문자만 무시하고 하이픈은 그대로 비교해,
+    // 서버·기기가 하이픈 표기를 다르게 내려주면 영원히 Scanning에 머문다.
+    const differentFormatUuid = 'e2c56db5dffb48d2b060d0f5a71096e0'; // 소문자 + 하이픈 없음
+    final h = _Harness();
+    await h.start(config); // config.uuid = _uuid (하이픈 있음, 대문자)
+
+    h.emitGood(-60, uuid: differentFormatUuid); // t=0
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3), rssi: -60, uuid: differentFormatUuid);
+
+    expect(
+      h.states.last,
+      isA<BeaconDetected>(),
+      reason: '같은 비콘인데 하이픈/대소문자 표기만 다르면 매칭에 실패하면 안 된다',
+    );
+  });
+
   test('빈 ranging 결과(주변에 비콘 없음)는 나쁜 프레임으로 취급된다', () async {
     final h = _Harness();
     await h.start(config);
 
-    h.emitGood(-60);
+    h.emitGood(-60); // t=0
     await h.settle();
-    h.clock.advance(const Duration(seconds: 3));
-    h.emitGood(-60);
-    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3));
     expect(h.states.last, isA<BeaconDetected>());
 
     h.emitEmpty();
@@ -278,9 +566,49 @@ void main() {
     expect(h.lastRegions!.single.proximityUUID, _uuid);
   });
 
+  test('watch()를 다시 부르면 region이 새 config의 UUID를 쓴다(첫 UUID를 캐싱하지 않는다)', () async {
+    // 잡아야 할 잘못된 구현: 최초 region을 스캐너 인스턴스에 캐싱해 두
+    // 번째 watch()에서도 옛 UUID를 계속 쓴다.
+    final h = _Harness();
+    await h.start(config); // uuid = _uuid
+    expect(h.lastRegions!.single.proximityUUID, _uuid);
+
+    const config2 = BeaconScanConfig(uuid: _otherUuid, rssiThreshold: -70, stabilizationSeconds: 3);
+    await h.start(config2); // 같은 스캐너 인스턴스에 두 번째 watch()
+
+    expect(h.lastRegions!.single.proximityUUID, _otherUuid);
+  });
+
+  test('stop()은 실제 구독 취소가 끝날 때까지 기다린다', () async {
+    // 잡아야 할 잘못된 구현: cancel() Future들을 기다리지 않고 stop()이
+    // 먼저 반환돼 버린다.
+    final rangingCancelGate = Completer<void>();
+    final h = _Harness(rangingCancelGate: rangingCancelGate);
+    await h.start(config);
+    h.emitGood(-60);
+    await h.settle();
+    await h.holdGoodFor(const Duration(seconds: 3));
+    expect(h.states.last, isA<BeaconDetected>());
+
+    var stopCompleted = false;
+    unawaited(h.scanner.stop().then((_) => stopCompleted = true));
+    await pumpEventQueue();
+
+    expect(
+      stopCompleted,
+      isFalse,
+      reason: 'ranging 구독의 cancel()이 아직 안 끝났으니 stop()도 끝나면 안 된다',
+    );
+
+    rangingCancelGate.complete();
+    await pumpEventQueue();
+
+    expect(stopCompleted, isTrue);
+  });
+
   group('권한 요청 — notDetermined을 거부로 단정하지 않는다', () {
     // notDetermined("아직 물어본 적 없음")를 denied로 잘못 취급하면, 사용자는
-    // 팝업을 본 적도 없는데 영원히 권한 거부 화면에 갇힌다. 아래 5개는 이
+    // 팝업을 본 적도 없는데 영원히 권한 거부 화면에 갇힌다. 아래 항목들은 이
     // 판정 경로 전체를 고정한다.
 
     test('notDetermined이면 요청을 정확히 한 번 호출하고 상태를 다시 읽는다', () async {
@@ -349,6 +677,61 @@ void main() {
       await h.start(config);
 
       expect(h.requestAuthorizationCallCount, 0);
+      expect(h.states.last, isA<BeaconScanning>());
+    });
+
+    test('권한 요청은 인스턴스 생애주기 동안 최대 한 번만 이뤄진다(재개해도 다시 묻지 않는다)', () async {
+      // 잡아야 할 잘못된 구현: 세션이 아니라 매번 "지금 상태가 notDetermined인가"
+      // 만 보고 요청 여부를 판단해, Android처럼 거부 후에도 계속
+      // notDetermined를 보고하는 환경에서 재개할 때마다 또 요청한다.
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.notDetermined,
+        authorizationAfterRequest: beacon_lib.AuthorizationStatus.notDetermined,
+      );
+      await h.start(config);
+      expect(h.requestAuthorizationCallCount, 1);
+      expect(h.states.last, isA<BeaconPermissionDenied>());
+
+      // 블루투스를 껐다 켜서 재개(재시도)를 유도한다.
+      h.bluetoothController.add(beacon_lib.BluetoothState.stateOff);
+      await h.settle();
+      h.bluetoothController.add(beacon_lib.BluetoothState.stateOn);
+      await h.settle();
+
+      expect(
+        h.requestAuthorizationCallCount,
+        1,
+        reason: '이미 한 번 요청했으니 재개해도 또 요청하면 안 된다 — Android는 거부 후에도 notDetermined를 계속 보고한다',
+      );
+      expect(h.states.last, isA<BeaconPermissionDenied>());
+    });
+
+    test('요청을 실제로 기다린 뒤에 상태를 다시 읽는다(경쟁 조건 없음)', () async {
+      // 잡아야 할 잘못된 구현: requestAuthorization()을 기다리지 않고
+      // (fire-and-forget) 곧장 상태를 다시 읽어버려, 사용자가 아직
+      // 응답하지 않았는데도 이미 결론을 내 버린다.
+      final gate = Completer<void>();
+      final h = _Harness(
+        initializeSucceeds: false,
+        authorization: beacon_lib.AuthorizationStatus.notDetermined,
+        authorizationAfterRequest: beacon_lib.AuthorizationStatus.allowed,
+        requestAuthorizationGate: gate,
+      );
+
+      h.scanner.watch(config).listen(h.states.add);
+      await pumpEventQueue();
+
+      expect(
+        h.states,
+        isNot(anyOf(contains(isA<BeaconPermissionDenied>()), contains(isA<BeaconScanning>()))),
+        reason: '아직 사용자가 응답하지 않았다(게이트가 안 풀렸다) — 요청을 기다리지 않았다면 '
+            '이미 상태를 재확인해 결론을 내렸을 것이다',
+      );
+
+      gate.complete();
+      await pumpEventQueue();
+
       expect(h.states.last, isA<BeaconScanning>());
     });
   });

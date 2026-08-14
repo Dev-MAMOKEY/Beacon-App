@@ -101,9 +101,11 @@ class BeaconScanConfig {
     required this.uuid,
     this.rssiThreshold = -70,
     this.stabilizationSeconds = 3,
+    this.maxSampleGap = const Duration(seconds: 2),
   });
 
-  /// 우리 클럽 비콘의 proximity UUID. 대소문자는 비교 시 무시한다.
+  /// 우리 클럽 비콘의 proximity UUID. 대소문자와 하이픈 유무는 비교 시
+  /// 무시한다.
   final String uuid;
 
   /// 이 값 이상이어야 "감지됨" 후보로 본다.
@@ -111,6 +113,12 @@ class BeaconScanConfig {
 
   /// [rssiThreshold] 이상이 연속으로 유지되어야 하는 최소 시간(초).
   final int stabilizationSeconds;
+
+  /// 연속된 두 "좋은" 샘플 사이에 이 값보다 긴 공백이 있으면 침묵으로 보고
+  /// 스트릭을 리셋한다. ranging은 대략 1초에 한 번씩 이벤트를 흘려보내므로
+  /// 기본값 2초는 정상적인 스캔 주기 지터는 흡수하면서도, 한동안 신호가
+  /// 아예 없다가 온 프레임 하나가 "계속 연속됐다"고 착각하는 것은 막는다.
+  final Duration maxSampleGap;
 }
 
 /// BLE 비콘 감지를 추상화한 계약. 화면과 컨트롤러는 이 인터페이스에만
