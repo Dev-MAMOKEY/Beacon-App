@@ -527,6 +527,55 @@ void main() {
     expect(find.byType(HomeScreen), findsOneWidget);
   });
 
+  testWidgets('날짜 상세 시트의 스크림도 하단 탭 셸을 덮어 탭이 눌리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `appSheetNavigatorOf`(루트) 대신
+    // `Navigator.of(context)`(셸 브랜치 안의 중첩 내비게이터)에 시트를 붙인다.
+    // 그러면 스크림이 브랜치 안에서만 그려져 `AppShell`의 상단 바와 하단 탭
+    // 바가 그대로 보이고 눌린다 — `popup.dart`가 "실제로 있었던 버그"라고
+    // 기록한 바로 그것이다. 팝업 3종은 위 세 테스트가 같은 방식으로 이미
+    // 고정하고 있는데 시트만 무방비였다(리뷰 Important 2): 실제로
+    // `appSheetNavigatorOf`를 중첩 내비게이터로 바꿔도 299개가 전부 초록이었다.
+    //
+    // `records_screen_test.dart`의 얇은 하네스는 `AppShell` 자체가 없어 이
+    // 회귀를 볼 수 없다 — 진짜 `appRouterProvider`를 마운트하는 이 파일에서만
+    // 검증할 수 있다.
+    final records = _CountingRecordsRepository();
+    await _pumpRealRouter(tester, clubIds: const [7], recordsRepository: records);
+
+    await tester.tap(find.text('기록'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RecordsScreen), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(of: find.byType(RecordsCalendar), matching: find.text('1')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SessionDetailSheetContent), findsOneWidget);
+
+    // 하단 탭 바의 "홈" 탭을 눌러본다. 스크림이 탭 바를 실제로 덮고 있다면
+    // 이 탭은 모달 배리어에 흡수된다 — 시트는 배리어 탭으로 닫히지만(팝업과
+    // 달리 시트는 `isDismissible: true`다) **탭 전환은 일어나지 않아야**
+    // 한다. warnIfMissed: false — 탭이 "홈" 위젯에 닿지 못하는 것 자체가 이
+    // 테스트가 확인하려는 바다.
+    await tester.tap(find.text('홈'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(RecordsScreen),
+      findsOneWidget,
+      reason: '탭이 탭 바까지 닿았다면 홈 화면으로 넘어갔을 것이다',
+    );
+    expect(find.byType(HomeScreen), findsNothing);
+
+    // 대조군 — 시트가 사라진 지금은 **같은 좌표**의 탭이 실제로 홈으로
+    // 데려간다. 이게 없으면 "애초에 눌리지 않는 좌표였다"는 가능성이 남아
+    // 위의 두 줄이 아무것도 증명하지 못한다.
+    await tester.tap(find.text('홈'));
+    await tester.pumpAndSettle();
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsNothing);
+  });
+
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
   // 상단 바는 고정 문구 "홈"이 아니라 로그인한 멤버의 이름을 보여준다.
   testWidgets('홈 탭의 상단 바는 고정 문구 대신 멤버 이름을 보여준다', (tester) async {
