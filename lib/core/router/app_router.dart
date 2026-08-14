@@ -120,6 +120,17 @@ String? computeRedirect({
 
   // 성공적으로 판별됐더라도, 실패가 아닌 한 최소 노출 시간이 지나기 전에는
   // 스플래시를 벗어나지 않는다.
+  //
+  // 이 hold는 원래 요청됐던 위치(matchedLocation)를 그냥 버린다 —
+  // 콜드 스타트가 `/records`였어도 결국 `/home`으로 끝나고,
+  // SignedOut 상태로 `/signup`에서 시작해도(딥링크 등으로) 이 시점의
+  // matchedLocation은 잊혀서 `/signup` 예외를 못 받는다. 지금은 무해하다
+  // — AndroidManifest에 `MAIN`/`LAUNCHER` 외의 intent-filter(`VIEW`,
+  // `BROWSABLE`, scheme)가 없고 `restorationScopeId`도 어디에도 없어서,
+  // `/` 이외의 위치에서 콜드 스타트가 시작될 경로 자체가 오늘은 없다.
+  // 딥링크나 상태 복원 중 하나라도 생기면, 그걸 추가하는 사람이 목적지를
+  // 이 hold를 관통해 보존하도록 고쳐야 한다 — 안 그러면 딥링크가 항상
+  // `/home`에 착지한다(조용히 새는 게 아니라 바로 눈에 띈다).
   if (value is! SessionUnavailable && now.difference(launchedAt) < minSplashDuration) {
     return matchedLocation == AppRoutes.splash ? null : AppRoutes.splash;
   }
