@@ -18,6 +18,7 @@ import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
 import 'package:beacon_app/features/records/data/records_dto.dart';
 import 'package:beacon_app/features/records/data/records_repository.dart';
+import 'package:beacon_app/features/records/presentation/records_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -262,7 +263,7 @@ void main() {
       findsOneWidget,
       reason: '탭이 실제로 눌렸다면 기록 화면으로 넘어갔을 것이다',
     );
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    expect(find.byType(RecordsScreen), findsNothing);
     // 팝업도 여전히 떠 있어야 한다 — 탭이 무시된 것이지 팝업이 어쩌다
     // 닫힌 게 아니다.
     expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
@@ -288,7 +289,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(HomeScreen), findsOneWidget);
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    expect(find.byType(RecordsScreen), findsNothing);
     expect(find.text('출석코드 입력'), findsOneWidget);
   });
 
@@ -325,7 +326,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(HomeScreen), findsOneWidget);
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    expect(find.byType(RecordsScreen), findsNothing);
     expect(find.text('출석 완료!'), findsOneWidget);
   });
 
@@ -350,7 +351,7 @@ void main() {
 
     await tester.tap(find.text('기록'));
     await tester.pumpAndSettle();
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
 
     expect(
       scanner.stopCallCount,
@@ -384,14 +385,14 @@ void main() {
 
     await tester.tap(find.text('기록'));
     await tester.pumpAndSettle();
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
 
     // 기록 탭을 보는 동안 사용자가 비콘 범위 안으로 들어왔다.
     scanner.emit(const BeaconDetected(-60));
     await tester.pumpAndSettle();
 
     expect(find.text('출석코드 입력'), findsNothing);
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
   });
 
   testWidgets('코드 입력 팝업이 떠 있는 채로 홈 탭을 떠나면 팝업도 함께 닫힌다', (tester) async {
@@ -417,7 +418,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('출석코드 입력'), findsNothing);
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
   });
 
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
@@ -472,7 +473,7 @@ void main() {
 
     router.go(AppRoutes.records);
     await tester.pumpAndSettle();
-    expect(find.text('기록 화면은 #12에서 구현합니다'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
 
     router.go(AppRoutes.admin);
     await tester.pumpAndSettle();
@@ -486,10 +487,13 @@ void main() {
   testWidgets('탭을 전환했다 돌아오면 이전 탭의 스크롤 위치와 네비게이션 스택이 보존된다', (tester) async {
     final (:router, container: _) = await _pumpRealRouter(tester, clubIds: const [7]);
 
-    // 기록 탭에서 목록을 스크롤해 둔다.
+    // 기록 탭의 본문을 스크롤해 둔다. 예전에는 이 자리가 항목 30개짜리
+    // 자리표시자 `ListView`였다 — 지금은 실제 기록 화면(달력 카드 + 요약
+    // 카드 3장)이고, 800×600 테스트 화면에서는 그 내용이 넘쳐 실제로
+    // 스크롤된다.
     router.go(AppRoutes.records);
     await tester.pumpAndSettle();
-    await tester.drag(find.byType(ListView), const Offset(0, -600));
+    await tester.drag(find.byType(SingleChildScrollView), const Offset(0, -120));
     await tester.pumpAndSettle();
     final scrolledOffset = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
     expect(scrolledOffset, greaterThan(0));

@@ -10,6 +10,7 @@ import '../../features/auth/presentation/session_controller.dart';
 import '../../features/auth/presentation/signup_screen.dart';
 import '../../features/auth/presentation/splash_screen.dart';
 import '../../features/club/presentation/invite_code_screen.dart';
+import '../../features/records/presentation/records_screen.dart';
 import '../../features/shell/presentation/app_shell.dart';
 import '../theme/app_colors.dart';
 
@@ -246,7 +247,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: AppRoutes.records,
-                builder: (context, state) => const _RecordsPlaceholder(),
+                builder: (context, state) => const RecordsScreen(),
               ),
             ],
           ),
@@ -295,10 +296,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   return router;
 });
 
-/// 자리표시자 4종(홈/관리자/마이/비밀번호 변경)이 메시지만 다르고 구조가
-/// 완전히 같아 하나로 합쳤다. `_RecordsPlaceholder`만 별도로 남아 있다 —
-/// 탭 전환 시 스크롤 위치가 보존되는지 테스트가 확인하려면 스크롤 가능한
-/// 콘텐츠가 필요하기 때문이다(app_router_widget_test.dart).
+/// 자리표시자 3종(관리자/마이/비밀번호 변경)이 메시지만 다르고 구조가
+/// 완전히 같아 하나로 합쳤다.
 class _Placeholder extends StatelessWidget {
   const _Placeholder({required this.message});
 
@@ -310,31 +309,6 @@ class _Placeholder extends StatelessWidget {
     return ColoredBox(
       color: colors.bg,
       child: Center(child: Text(message)),
-    );
-  }
-}
-
-/// #12에서 실제 기록 캘린더 화면으로 교체된다. 스크롤 가능한 목록을 두는
-/// 이유는 탭 전환 시 스크롤 위치가 보존되는지를 테스트가 확인해야 하기
-/// 때문이다(app_router_widget_test.dart) — `IndexedStack` 대신 탭마다 매번
-/// 새로 빌드하면 여기 스크롤 위치가 0으로 리셋된다. 실제 기록 화면이
-/// 들어오면 자연히 대체된다.
-class _RecordsPlaceholder extends StatelessWidget {
-  const _RecordsPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: ListView(
-        children: [
-          const SizedBox(height: 40),
-          const Center(child: Text('기록 화면은 #12에서 구현합니다')),
-          for (var i = 0; i < 30; i++)
-            SizedBox(height: 80, child: Center(child: Text('placeholder-$i'))),
-        ],
-      ),
     );
   }
 }
