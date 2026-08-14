@@ -156,10 +156,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _visible = true;
 
   /// 지금 실제로 화면에 떠 있는(것으로 우리가 추적하는) 상태 기반 팝업과
-  /// **그 라우트 객체**. enum만으로는 "무엇을 띄웠는가"만 알 뿐 "그때 띄운
-  /// 바로 그것인가"를 알 수 없다 — 옛 다이얼로그의 뒤늦은 완료 콜백이
-  /// enum 값만 보고 자기 자신인 줄 착각해, 이미 교체된 살아 있는 팝업의
-  /// 추적을 지워 버렸다(리뷰 Critical 1).
+  /// **그 라우트 객체**.
+  ///
+  /// 라우트 객체를 함께 들고 있는 이유는 닫기와 완료 판정 둘 다 "그때 띄운
+  /// 바로 그것"을 가리켜야 하기 때문이다. 예전에는 `Navigator.pop()`으로
+  /// 닫았는데, 그건 "스택 맨 위"를 닫을 뿐 정체성을 모른다 — 우리 팝업 위에
+  /// 다른 루트 라우트가 얹혀 있으면 엉뚱한 것이 닫히고 정작 조건이 거짓이 된
+  /// 팝업은 그대로 남는다(리뷰 Important 6, `home_screen_test.dart`의
+  /// "홈의 팝업 위에 다른 루트 라우트가 있어도…"가 이 회귀를 잡는다).
   HomePopupTarget _shownPopup = HomePopupTarget.none;
   Route<void>? _shownPopupRoute;
 
@@ -417,13 +421,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// 이 화면이 소유하는 팝업 라우트를 push한다. 완료(pop/removeRoute) 판정을
-  /// **라우트 정체성**으로 하는 것이 핵심이다 — 예전에는 `_shownPopup`
-  /// enum만 비교해서, 이미 다른 팝업으로 교체된 뒤에 도착한 옛 팝업의
-  /// 완료가 자기 자신인 줄 알고 추적을 `none`으로 되돌렸다. 그러면 다음
+  /// 이 화면이 소유하는 팝업 라우트를 push한다. 완료 콜백이 추적 상태를
+  /// 되돌릴지는 **라우트 정체성**(`identical`)으로 판정한다 — enum 값만
+  /// 비교하면, 이미 다른 팝업으로 교체된 뒤에 도착한 옛 팝업의 완료가 자기
+  /// 자신인 줄 알고 추적을 `none`으로 되돌릴 수 있다. 그러면 다음
   /// `_syncPopups`가 `target(none) == _shownPopup(none)`으로 조기 반환해
-  /// **살아 있는 새 팝업이 영원히 남는다** — 코드 입력 팝업이 이렇게 새면
-  /// 비콘이 범위를 벗어난 뒤에도 출석이 제출된다(리뷰 Critical 1).
+  /// 살아 있는 새 팝업이 영원히 남는다(리뷰 Critical 1).
+  ///
+  /// 오늘의 코드 경로에서는 그 오인이 실제로 일어나지 않는다 —
+  /// `Navigator.pop()`/`removeRoute()`가 라우트의 `popped` future를
+  /// **동기적으로** 완료시켜서, 완료 콜백은 항상 다음 push보다 먼저 도는
+  /// 마이크로태스크에 놓인다(옛 구현에 로그를 심어 확인했다). 그래서 이
+  /// `identical` 검사는 재현된 버그의 수정이라기보다, pop과 재push 사이에
+  /// `await`이 하나라도 끼는 순간 활성화될 함정을 구조적으로 없애는 것이다.
+  /// 아래 `_removeOwnedRoute`가 라우트 객체를 필요로 하므로 비용도 0이다.
   Route<void> _pushOwnedRoute(Route<void> route) {
     _ownedRoutes.add(route);
     unawaited(
