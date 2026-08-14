@@ -57,7 +57,15 @@ ModalBottomSheetRoute<T> buildAppSheetRoute<T>({
   final colors = Theme.of(context).extension<AppColors>()!;
 
   return ModalBottomSheetRoute<T>(
-    isScrollControlled: false,
+    // 내용이 길어지면(하루에 세션이 여럿인 날) 시트가 남은 높이를 다 쓰고 그
+    // 안에서 스크롤해야 한다. `false`면 최대 높이가 화면의 9/16으로 묶여
+    // `RenderFlex` 오버플로가 나고 뒤쪽 세션을 볼 방법이 아예 없다(리뷰
+    // Important 5). 짧은 내용은 [AppSheet]의 `mainAxisSize: min`이 그대로
+    // 내용 높이에 맞춰 주므로 이 값이 바뀌어도 달라지지 않는다.
+    isScrollControlled: true,
+    // 위로 늘어난 시트가 상태 바 밑으로 파고들지 않게 한다. 짧은 시트는
+    // 화면 아래에 붙어 있으므로 영향이 없다.
+    useSafeArea: true,
     isDismissible: isDismissible,
     enableDrag: enableDrag,
     backgroundColor: colors.white,
@@ -104,7 +112,10 @@ class AppSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-            child,
+            // 내용이 남은 높이보다 길면 그 안에서 스크롤한다. 짧으면
+            // `Flexible`(loose)이 아무 제약도 걸지 않아 시트가 내용 높이에
+            // 딱 맞는다 — 즉 이 래핑은 넘칠 때만 눈에 보인다.
+            Flexible(child: SingleChildScrollView(child: child)),
           ],
         ),
       ),
