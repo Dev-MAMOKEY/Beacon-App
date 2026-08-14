@@ -178,6 +178,30 @@ Future<void> _enterOtp(WidgetTester tester, String code) async {
   }
 }
 
+/// 홈 화면 dispose 테스트 전용 호스트. 기존 "화면 dispose 시 스캔이
+/// 중지된다" 테스트처럼 `tester.pumpWidget(SizedBox.shrink())`로 전체
+/// 위젯 트리를 갈아치우면 `MaterialApp`(=루트 내비게이터·Overlay) 자체도
+/// 사라져 버려, "다이얼로그가 실제로 pop됐는지"를 검증할 수 없다 — 그
+/// 시점엔 다이얼로그가 붙어 있던 Overlay조차 이미 없기 때문이다. 이
+/// 호스트는 `MaterialApp`은 살려 두고 `HomeScreen`만 트리에서 뺀다.
+class _ToggleHome extends StatefulWidget {
+  const _ToggleHome({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ToggleHome> createState() => _ToggleHomeState();
+}
+
+class _ToggleHomeState extends State<_ToggleHome> {
+  bool _visible = true;
+
+  void hide() => setState(() => _visible = false);
+
+  @override
+  Widget build(BuildContext context) => _visible ? widget.child : const SizedBox.shrink();
+}
+
 void main() {
   testWidgets('비콘 감지 + 활성 세션 → 코드 입력란이 열린다', (tester) async {
     // 잡아야 할 잘못된 구현: 입력란을 조건 없이 항상 렌더한다.
@@ -427,6 +451,95 @@ void main() {
     expect(callCount, 1);
   });
 
+  // 조정자 지시(2차) — 출석코드 입력·블루투스 꺼짐 팝업이 다이얼로그
+  // 라우트로 바뀌면서 "조건이 참인 동안 화면 트리에 얹혀 있다 조건이
+  // 거짓이 되면 사라진다"는 보증을 코드가 직접 챙겨야 하게 됐다(예전
+  // Stack 오버레이는 조건부 렌더 한 줄이면 충분했다). 비콘이 범위를
+  // 벗어나는 것은 `_attendanceDone`을 거치지 않고 코드 입력 조건
+  // (`_codeConditionRaw`)이 직접 거짓이 되는 경로라, 기존 테스트들(모두
+  // ALREADY_CHECKED_IN/성공 경로만 검증했다)과 다른 지점을 잡는다.
+  testWidgets('비콘이 범위를 벗어나면 열려 있던 코드 입력 팝업이 닫힌다', (tester) async {
+    // 잡아야 할 잘못된 구현: 코드 입력 조건이 거짓이 돼도 이미 띄운
+    // 다이얼로그를 pop하지 않는다 — 비콘이 범위를 벗어나도 팝업이 화면에
+    // 그대로 남는다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+
+    scanner.emit(const BeaconOutOfRange());
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsNothing);
+    expect(find.byType(AppOtpInput), findsNothing);
+  });
+
+  testWidgets('블루투스 꺼짐 상태가 두 번 토글되어도 팝업은 한 번에 하나만 뜬다', (tester) async {
+    // 잡아야 할 잘못된 구현: 이미 같은 팝업이 떠 있는지 확인하지 않고
+    // 조건이 참일 때마다 무조건 새 다이얼로그를 밀어 넣는다 — 껐다 켰다
+    // 반복하면 팝업이 여러 장 겹쳐 쌓인다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+
+    scanner.emit(const BeaconScanning());
+    await tester.pumpAndSettle();
+    expect(find.text('블루투스가 꺼져 있어요'), findsNothing);
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+  });
+
+  testWidgets('화면이 dispose되면 열려 있던 팝업도 함께 사라진다', (tester) async {
+    // 잡아야 할 잘못된 구현: dispose()가 열려 있는 팝업을 닫지 않는다 —
+    // 다이얼로그가 루트 내비게이터에 그대로 남아 홈 화면이 트리에서
+    // 빠져도(예: 로그아웃, 향후 탭 재구성) 계속 화면 위에 떠 있게 샌다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(() => _ReadySessionController(_profile)),
+        beaconScannerProvider.overrideWithValue(scanner),
+        beaconConfigRepositoryProvider.overrideWithValue(_FakeBeaconConfigRepository()),
+        attendanceRepositoryProvider.overrideWithValue(repo),
+        recordsRepositoryProvider.overrideWithValue(_EmptyRecordsRepository()),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final hostKey = GlobalKey<_ToggleHomeState>();
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          home: Scaffold(body: _ToggleHome(key: hostKey, child: const HomeScreen())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+
+    // HomeScreen만 트리에서 뺀다 — MaterialApp(=루트 내비게이터)은 살아
+    // 있으므로, 팝업이 남아 있다면 계속 보일 것이다.
+    hostKey.currentState!.hide();
+    await tester.pumpAndSettle();
+
+    expect(find.text('블루투스가 꺼져 있어요'), findsNothing);
+  });
+
   testWidgets('서버가 LATE를 돌려주면 완료 화면이 지각 처리되었습니다를 보여준다', (tester) async {
     // 잡아야 할 잘못된 구현: 완료 문구를 "출석 완료"로 고정해 둔다.
     final scanner = FakeBeaconScanner();
@@ -509,5 +622,18 @@ void main() {
     // 비콘은 여전히 감지 상태(Detected)이고 활성 세션도 그대로지만, 이미
     // 출석을 마쳤으므로 입력란은 다시 열리면 안 된다.
     expect(find.byType(AppOtpInput), findsNothing);
+  });
+
+  // 조정자 지시(2차) — 블루투스 꺼짐과 코드 입력 조건이 동시에 참이면
+  // 블루투스가 이겨야 한다("죽은 라디오 위에서 코드 입력을 받는 건
+  // 의미가 없다"). `BeaconScanState`가 sealed class라 오늘은 두 조건이
+  // 실제로 동시에 참일 수 없어(위젯 테스트로는 이 우선순위를 직접 재현할
+  // 수 없다) 상태 계산과 분리된 순수 함수로 뽑아 여기서 직접 검증한다.
+  test('resolveHomePopupTarget: 블루투스 꺼짐과 코드 입력 조건이 동시에 참이면 블루투스가 이긴다', () {
+    // 잡아야 할 잘못된 구현: 코드 입력 조건을 블루투스보다 먼저 검사해
+    // (코드 입력이 우선하게) 만든다.
+    final target = resolveHomePopupTarget(bluetoothOff: true, codeConditionRaw: true);
+
+    expect(target, HomePopupTarget.bluetoothOff);
   });
 }

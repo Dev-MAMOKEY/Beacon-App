@@ -14,6 +14,7 @@ import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
 import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart';
+import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
 import 'package:beacon_app/features/records/data/records_dto.dart';
 import 'package:beacon_app/features/records/data/records_repository.dart';
@@ -72,13 +73,39 @@ class _NoopRecordsRepository implements RecordsRepository {
 }
 
 /// [_pumpRealRouter]와 `showAdmin` 리다이렉트 테스트가 공통으로 쓰는
-/// `HomeScreen` 관련 override 4종.
-List<Override> _homeScreenOverrides() => [
-  beaconScannerProvider.overrideWithValue(FakeBeaconScanner()),
+/// `HomeScreen` 관련 override 4종. [scanner]/[attendanceRepository]를
+/// 넘기면 그 인스턴스를 그대로 쓴다 — 팝업(블루투스 꺼짐/출석코드 입력/
+/// 출석완료)이 하단 탭 셸을 실제로 덮는지 검증하는 테스트들이 비콘 상태를
+/// 직접 조작하고 체크인 결과를 스크립트할 수 있어야 하기 때문이다.
+List<Override> _homeScreenOverrides({
+  BeaconScanner? scanner,
+  AttendanceRepository? attendanceRepository,
+}) => [
+  beaconScannerProvider.overrideWithValue(scanner ?? FakeBeaconScanner()),
   beaconConfigRepositoryProvider.overrideWithValue(_NoopBeaconConfigRepository()),
-  attendanceRepositoryProvider.overrideWithValue(_NoopAttendanceRepository()),
+  attendanceRepositoryProvider.overrideWithValue(attendanceRepository ?? _NoopAttendanceRepository()),
   recordsRepositoryProvider.overrideWithValue(_NoopRecordsRepository()),
 ];
+
+/// 활성 세션을 항상 돌려주고, checkIn 호출은 [status]로 확정하는 페이크
+/// — 완료 팝업이 하단 탭 셸을 덮는지 검증하는 테스트가 실제로 체크인
+/// 흐름을 끝까지 태우기 위해 쓴다.
+class _ActiveSessionAttendanceRepository implements AttendanceRepository {
+  _ActiveSessionAttendanceRepository({required this.status});
+
+  final AttendanceStatus status;
+
+  @override
+  Future<ActiveSession?> fetchActiveSession(int clubId) async =>
+      const ActiveSession(sessionId: 88, sessionName: '정기모임', status: 'ACTIVE');
+
+  @override
+  Future<AttendanceStatus> checkIn({
+    required int clubId,
+    required int sessionId,
+    required String otpCode,
+  }) async => status;
+}
 
 /// `app_router_test.dart`는 `computeRedirect`가 문자열 `"/invite"`를
 /// 돌려주는지만 확인하는 순수 함수 테스트다 — 그 문자열이 실제로 어떤
@@ -135,6 +162,8 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
   WidgetTester tester, {
   List<int>? clubIds,
   bool showAdmin = false,
+  BeaconScanner? scanner,
+  AttendanceRepository? attendanceRepository,
 }) async {
   final store = InMemoryTokenStore();
   if (clubIds != null) await store.save(accessToken: 'a', refreshToken: 'r');
@@ -144,7 +173,7 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
       tokenStoreProvider.overrideWithValue(store),
       authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(clubIds ?? const [])),
       showAdminTabProvider.overrideWithValue(showAdmin),
-      ..._homeScreenOverrides(),
+      ..._homeScreenOverrides(scanner: scanner, attendanceRepository: attendanceRepository),
     ],
   );
   addTearDown(container.dispose);
@@ -195,6 +224,109 @@ void main() {
 
     // `/home` GoRoute가 없거나 다른 화면을 가리키면 이 expect가 실패한다.
     expect(find.byType(HomeScreen), findsOneWidget);
+  });
+
+  // 조정자 지시(2차) — 출석코드 입력·블루투스 꺼짐 팝업이 홈 화면 안의
+  // `Positioned.fill` 오버레이였을 때는 그 스크림이 홈 화면(하단 탭 셸의
+  // 중첩 네비게이터 안) 안에서만 그려져, `AppShell`의 상단 바·하단 탭
+  // 바는 그대로 보이고 탭도 눌렸다. 지금은 `showAppPopup`이 항상
+  // `useRootNavigator: true`로 다이얼로그를 띄우므로, 그 위로 상단
+  // 바·하단 탭 바가 덮여야 한다 — `home_screen_test.dart`의 `_pumpHome`은
+  // `AppShell` 자체가 없는 얇은 하네스라 이 회귀를 볼 수 없고, 실제
+  // `appRouterProvider`(=진짜 `AppShell`)를 마운트하는 이 파일에서만
+  // 검증할 수 있다.
+  testWidgets('블루투스 꺼짐 팝업의 스크림이 하단 탭 셸을 덮어 탭이 눌리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 팝업을 다시 홈 화면 안 Positioned.fill로
+    // 만들거나, 다이얼로그를 루트가 아닌 중첩 네비게이터에 붙인다 —
+    // 어느 쪽이든 하단 탭 바가 그대로 눌린다.
+    final scanner = FakeBeaconScanner();
+    final (router: _, container: _) = await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      scanner: scanner,
+    );
+
+    scanner.emit(const BeaconBluetoothOff());
+    await tester.pumpAndSettle();
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+
+    // 하단 탭 바의 "기록" 탭을 눌러본다. 스크림이 탭 바를 실제로 덮고
+    // 있다면 이 탭은 모달 배리어에 흡수돼 아무 효과가 없어야 한다.
+    // warnIfMissed: false — 탭이 실제로 "기록" 위젯에 닿지 못하는 것 자체가
+    // 이 테스트가 확인하려는 바다.
+    await tester.tap(find.text('기록'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(HomeScreen),
+      findsOneWidget,
+      reason: '탭이 실제로 눌렸다면 기록 화면으로 넘어갔을 것이다',
+    );
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    // 팝업도 여전히 떠 있어야 한다 — 탭이 무시된 것이지 팝업이 어쩌다
+    // 닫힌 게 아니다.
+    expect(find.text('블루투스가 꺼져 있어요'), findsOneWidget);
+  });
+
+  testWidgets('출석코드 입력 팝업의 스크림도 하단 탭 셸을 덮어 탭이 눌리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 위와 같은 원인 — 팝업이 중첩 네비게이터
+    // 아래에 갇힌다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ActiveSessionAttendanceRepository(status: AttendanceStatus.present);
+    final (router: _, container: _) = await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+
+    await tester.tap(find.text('기록'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    expect(find.text('출석코드 입력'), findsOneWidget);
+  });
+
+  // 조정자가 명시적으로 요청한 검증 — 출석완료 팝업(`showAttendanceSuccessSheet`
+  // → `showAppPopup`)은 최초 재작업 때부터 이미 다이얼로그 라우트였으니
+  // `useRootNavigator`가 기본값(true)만으로 이미 셸을 덮고 있었어야 한다.
+  // 프로즈로 "이미 됐을 것"이라 추측하지 않고 실제로 체크인까지 끝까지
+  // 태워 확인한다.
+  testWidgets('출석완료 팝업의 스크림도 하단 탭 셸을 덮어 탭이 눌리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: showAppPopup이 useRootNavigator를 명시하지
+    // 않아(또는 false로) 중첩 네비게이터에 갇힌다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ActiveSessionAttendanceRepository(status: AttendanceStatus.present);
+    final (router: _, container: _) = await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+
+    final fields = find.byType(TextField);
+    for (var i = 0; i < 4; i++) {
+      await tester.enterText(fields.at(i), '1');
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+    expect(find.text('출석 완료!'), findsOneWidget);
+
+    await tester.tap(find.text('기록'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(find.text('기록 화면은 #12에서 구현합니다'), findsNothing);
+    expect(find.text('출석 완료!'), findsOneWidget);
   });
 
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
