@@ -101,6 +101,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   int? _bootstrappedClubId;
 
+  /// 클럽 스코프 데이터(활성 세션·기록·비콘 설정)의 세대. 클럽이 바뀌거나
+  /// 홈 탭이 다시 보일 때마다 증가한다. 이 값을 도입한 이유:
+  ///
+  /// 클럽 7의 비콘 설정 조회가 느리게 시작 → 세션이 클럽 9로 바뀌고 클럽 9의
+  /// 조회가 먼저 끝남 → 클럽 7의 설정이 **마지막에** 도착해 클럽 9의 구독을
+  /// 갈아치우고 클럽 7 스캔을 시작. 그러면 "비콘 감지 AND 활성 세션"은
+  /// 구문적으로 참이지만 그 둘이 서로 다른 클럽의 사실이라, 클럽 7의 비콘
+  /// 앞에서 클럽 9의 세션에 출석 코드를 넣게 된다(리뷰 Critical 2).
+  /// 모든 비동기 완료 지점이 자기가 시작된 세대를 확인하고, 아니면 결과를
+  /// 버린다.
+  int _bootstrapGeneration = 0;
+
+  /// 비콘 스캔 하나의 수명. [_bootstrapGeneration]과 따로 두는 이유는 "다시
+  /// 시도"(범위 이탈 후 재스캔)가 진행 중인 세션·기록 조회까지 무효화할
+  /// 이유는 없기 때문이다.
+  int _scanGeneration = 0;
+
+  /// 진행 중인 출석 체크 요청의 세대. 오래된 응답이 새 응답 뒤에 UI를
+  /// 덮어쓰는 것을 막는다(리뷰 Important 4).
+  int _submitGeneration = 0;
+
   ActiveSession? _activeSession;
   MonthlyRecords? _records;
 
@@ -110,12 +131,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// 성공 또는 ALREADY_CHECKED_IN 이후 true로 고정된다 — 그 뒤로는 비콘이
   /// 감지되고 활성 세션이 있어도 입력란을 다시 열지 않는다(브리핑 5-1).
+  /// 클럽이 바뀌면 초기화된다.
   bool _attendanceDone = false;
 
-  /// 지금 실제로 화면에 떠 있는(것으로 우리가 추적하는) 상태 기반 팝업.
-  /// [_syncPopups]만 이 값을 바꾼다 — 다이얼로그를 밀어 넣거나(push) 빼는
-  /// (pop) 모든 결정이 이 한 곳으로 모인다.
+  /// 홈 탭이 지금 실제로 사용자에게 보이는지.
+  ///
+  /// `StatefulShellRoute.indexedStack`은 선택되지 않은 브랜치를 dispose하지
+  /// 않고 `Offstage` + `TickerMode(enabled: false)`로 감싼 채 살려 둔다
+  /// (go_router 17.5.0 `route.dart`의 `_IndexedStackedRouteBranchContainer.
+  /// _buildRouteBranchContainer`에서 직접 확인했다). 그래서 `dispose()`의
+  /// 정리 로직은 탭 전환으로는 아예 실행되지 않고, 숨은 홈이 계속 BLE를
+  /// 돌리며 기록 탭 위로 코드 입력 팝업을 띄울 수 있었다(리뷰 Important 3).
+  ///
+  /// `TickerMode`를 가시성 신호로 쓸 수 있는 근거는 두 가지다.
+  /// 1. 효과값이 조상과 AND로 합성된다(`_TickerModeState._updateEffectiveMode`
+  ///    = `_ancestorTickerMode && widget.enabled`). 브랜치 안쪽 `Navigator`의
+  ///    `Overlay`가 넣는 `TickerMode(enabled: true)`가 사이에 끼어도 최종
+  ///    값은 여전히 false다.
+  /// 2. 우리 팝업은 `PopupRoute`(=`opaque == false`)라 그 아래 오버레이
+  ///    엔트리는 계속 onstage로 남고 `tickerEnabled`가 false로 내려가지
+  ///    않는다(`overlay.dart`의 `OverlayState.build`는 **opaque** 엔트리
+  ///    아래에만 `tickerEnabled: false`를 준다). 즉 우리 자신이 띄운
+  ///    다이얼로그 때문에 "숨겨졌다"고 오판하지 않는다.
+  bool _visible = true;
+
+  /// 지금 실제로 화면에 떠 있는(것으로 우리가 추적하는) 상태 기반 팝업과
+  /// **그 라우트 객체**. enum만으로는 "무엇을 띄웠는가"만 알 뿐 "그때 띄운
+  /// 바로 그것인가"를 알 수 없다 — 옛 다이얼로그의 뒤늦은 완료 콜백이
+  /// enum 값만 보고 자기 자신인 줄 착각해, 이미 교체된 살아 있는 팝업의
+  /// 추적을 지워 버렸다(리뷰 Critical 1).
   HomePopupTarget _shownPopup = HomePopupTarget.none;
+  Route<void>? _shownPopupRoute;
+
+  /// 이 화면이 루트 내비게이터에 직접 push한 팝업 라우트 전부 — 상태 기반
+  /// 팝업뿐 아니라 출석완료 팝업도 포함한다. 홈이 트리에서 빠지거나 홈 탭이
+  /// 숨겨지면 여기 담긴 것을 전부 닫는다(리뷰 Important 6).
+  final List<Route<void>> _ownedRoutes = [];
 
   /// `initState`에서 한 번 읽어 저장해 둔다 — Riverpod의
   /// `ConsumerStatefulElement`는 `dispose()` 시점에 `ref`가 이미
@@ -139,41 +190,148 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 홈 탭이 보이는지/숨겨졌는지는 InheritedWidget(`_EffectiveTickerMode`)
+    // 의존성으로 전달되므로, 그 값이 뒤집히는 순간 이 콜백이 불린다.
+    // `TickerMode.of`는 3.35에서 deprecated돼 `valuesOf`를 쓴다.
+    final visible = TickerMode.valuesOf(context).enabled;
+    if (visible == _visible) return;
+    _visible = visible;
+    if (visible) {
+      _onBecameVisible();
+    } else {
+      _onBecameHidden();
+    }
+  }
+
+  @override
   void dispose() {
-    _beaconSub?.cancel();
+    // 이 시점 이후에 도착하는 모든 비동기 완료를 무효화한다.
+    _bootstrapGeneration++;
+    _scanGeneration++;
+    _submitGeneration++;
+    unawaited(_cancelBeaconSubscription());
     // 화면을 벗어나면 스캔을 멈춘다 — watch()를 한 번도 부르지 못한
     // 채(예: 클럽 설정 조회 실패) 이 화면이 dispose돼도 안전하게 no-op이다.
     unawaited(_scanner.stop());
     _otpController.dispose();
     _codeEntryState.dispose();
-    // 열려 있던 상태 기반 팝업(코드 입력/블루투스 꺼짐)이 있으면 함께
-    // 닫는다 — 안 그러면 이 화면이 탭 전환 등으로 트리에서 빠져도
-    // 다이얼로그는 루트 내비게이터에 그대로 남아, 다음에 보이는 탭 위에
-    // 계속 떠 있는 채로 샌다.
-    if (_shownPopup != HomePopupTarget.none) {
-      _rootNavigator.pop();
-    }
+    // 이 화면이 띄운 팝업은 전부 이 화면과 함께 사라져야 한다 — 안 그러면
+    // 다이얼로그는 루트 내비게이터에 그대로 남아 다음에 보이는 화면 위에
+    // 계속 떠 있는 채로 샌다. 코드·블루투스 팝업뿐 아니라 출석완료 팝업도
+    // 포함이다(리뷰 Important 6).
+    _closeOwnedPopups();
     super.dispose();
   }
 
+  /// 홈 탭이 숨겨졌다 — BLE 스캔을 멈추고 이 화면이 띄운 팝업을 전부 닫는다.
+  void _onBecameHidden() {
+    unawaited(_stopScan());
+    _beaconState = const BeaconIdle();
+    // `didChangeDependencies`는 빌드 단계에서 불린다 — 내비게이션은 이
+    // 프레임이 끝난 뒤로 미룬다. 추적 상태(_shownPopup 등)는 지금 바로
+    // 지워야 그 사이에 도착하는 이벤트가 "이미 떠 있다"고 오판하지 않는다.
+    final routes = _takeOwnedPopups();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _removeRoutes(routes));
+  }
+
+  /// 홈 탭이 다시 보인다 — 스캔과 클럽 스코프 데이터를 처음부터 다시
+  /// 올린다. `watch()`가 새 세션(새 단조 시계 + 빈 스트릭)을 만들므로
+  /// 안정화 스트릭도 0에서 다시 쌓인다.
+  void _onBecameVisible() {
+    final clubId = _bootstrappedClubId;
+    // 아직 부트스트랩 전이면(숨은 채로 처음 마운트된 경우) 곧이어 실행될
+    // build()가 부트스트랩을 시작한다.
+    if (clubId == null) return;
+    _bootstrap(clubId);
+  }
+
+  /// 클럽이 바뀌었다 — 이전 클럽에서 모은 것을 전부 버린다. 세대 검사만으로는
+  /// **이미 도착해 화면에 반영된** 옛 클럽의 값(비콘 상태·활성 세션·기록·
+  /// 출석 완료 여부)이 남아, 새 클럽의 값과 뒤섞여 AND 조건을 만족시킨다
+  /// (리뷰 Critical 2).
+  ///
+  /// `build()` 중에 불리므로 여기서는 필드만 바꾸고(어차피 이어지는 build가
+  /// 새 값을 읽는다) 내비게이션은 프레임 뒤로 미룬다.
+  void _resetClubScopedState() {
+    _beaconState = const BeaconIdle();
+    _activeSession = null;
+    _records = null;
+    _attendanceDone = false;
+    _lastOtpCode = null;
+    final routes = _takeOwnedPopups();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _removeRoutes(routes);
+      // `_codeEntryState.update`는 다이얼로그 쪽 `ListenableBuilder`를
+      // 다시 그리게 하므로 빌드 중에는 부를 수 없다. 진행 중이던 제출은
+      // 세대 검사로 이미 버려지지만, 그 결과가 남긴 `submitting`/오답
+      // 메시지까지 여기서 함께 지운다.
+      if (!mounted) return;
+      _codeEntryState.update(
+        submitting: false,
+        clearInvalidCodeMessage: true,
+        needsManualRetry: false,
+      );
+    });
+  }
+
   void _bootstrap(int clubId) {
+    final generation = ++_bootstrapGeneration;
     unawaited(_startBeaconScan(clubId));
-    unawaited(_loadActiveSession(clubId));
-    unawaited(_loadRecords(clubId));
+    unawaited(_loadActiveSession(clubId, generation));
+    unawaited(_loadRecords(clubId, generation));
+  }
+
+  /// [generation]이 아직 현재 부트스트랩 세대인지. 아니면 그 결과는 이미
+  /// 다른 클럽(또는 이전 가시성 구간)의 것이므로 버려야 한다.
+  bool _isCurrentBootstrap(int generation) => mounted && generation == _bootstrapGeneration;
+
+  bool _isCurrentScan(int generation) => mounted && generation == _scanGeneration;
+
+  /// 현재 구독만 끊는다. 네이티브 스캔 중지까지 하려면 [_stopScan].
+  Future<void> _cancelBeaconSubscription() async {
+    final sub = _beaconSub;
+    _beaconSub = null;
+    await sub?.cancel();
+  }
+
+  /// 스캔을 완전히 멈춘다. 세대를 먼저 올려, 진행 중이던 [_startBeaconScan]
+  /// 이 뒤늦게 `watch()`를 불러 "아무도 멈추지 않는 스캔"을 남기는 것을
+  /// 막는다(리뷰 Important 5).
+  Future<void> _stopScan() async {
+    _scanGeneration++;
+    // 구독 취소는 기다리지 않는다 — 이 함수가 보장해야 하는 것은 "네이티브
+    // 스캔이 실제로 멈췄다"이고 그건 `stop()`이 자기 teardown을 기다려
+    // 보장한다. 뒤늦게 도착하는 옛 구독의 이벤트는 세대 검사가 이미
+    // 무해하게 만든다.
+    unawaited(_cancelBeaconSubscription());
+    await _scanner.stop();
   }
 
   Future<void> _startBeaconScan(int clubId) async {
-    late final BeaconConfig beaconConfig;
+    final generation = ++_scanGeneration;
+
+    final BeaconConfig beaconConfig;
     try {
       beaconConfig = await ref.read(beaconConfigRepositoryProvider).fetch(clubId);
     } catch (_) {
       return;
     }
-    if (!mounted) return;
+    // 이 조회가 도는 동안 클럽이 바뀌었거나 화면이 사라졌으면 결과를
+    // 버린다 — 늦게 도착한 옛 클럽의 설정이 현재 클럽의 스캔을 갈아치우는
+    // 것이 리뷰 Critical 2의 실패 시나리오다.
+    if (!_isCurrentScan(generation)) return;
 
-    await _beaconSub?.cancel();
+    await _cancelBeaconSubscription();
+    // `mounted`를 이 await **앞에서만** 보면, 취소를 기다리는 사이에
+    // dispose가 일어난 경우 dispose()가 이미 stop()을 부른 뒤에 아래
+    // watch()가 새 스캔을 시작한다 — 콜백은 무시되지만 그 스캔을 멈출
+    // 주체가 아무도 없다(리뷰 Important 5).
+    if (!_isCurrentScan(generation)) return;
+
     _beaconSub = _scanner.watch(beaconConfig.toScanConfig()).listen((state) {
-      if (!mounted) return;
+      if (!_isCurrentScan(generation)) return;
       setState(() => _beaconState = state);
       _syncPopups();
     });
@@ -182,35 +340,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _restartScan() async {
     final clubId = _bootstrappedClubId;
     if (clubId == null) return;
-    await _scanner.stop();
+    await _stopScan();
     if (!mounted) return;
     setState(() => _beaconState = const BeaconIdle());
     _syncPopups();
     await _startBeaconScan(clubId);
   }
 
-  Future<void> _loadActiveSession(int clubId) async {
+  Future<void> _loadActiveSession(int clubId, int generation) async {
     try {
       final session = await ref.read(attendanceRepositoryProvider).fetchActiveSession(clubId);
-      if (!mounted) return;
+      if (!_isCurrentBootstrap(generation)) return;
       setState(() => _activeSession = session);
       _syncPopups();
     } catch (_) {
       // 활성 세션 조회 실패는 "세션 없음"과 같은 화면(안내 문구)으로
       // 수렴시킨다 — 홈 화면의 핵심 기능은 계속 동작해야 한다.
-      if (!mounted) return;
+      if (!_isCurrentBootstrap(generation)) return;
       setState(() => _activeSession = null);
       _syncPopups();
     }
   }
 
-  Future<void> _loadRecords(int clubId) async {
+  Future<void> _loadRecords(int clubId, int generation) async {
     final now = DateTime.now();
     try {
       final records = await ref
           .read(recordsRepositoryProvider)
           .fetch(clubId: clubId, year: now.year, month: now.month);
-      if (!mounted) return;
+      if (!_isCurrentBootstrap(generation)) return;
       setState(() => _records = records);
     } catch (_) {
       // 요약 카드가 없어도 출석 체크 기능 자체에는 영향이 없다 — 조용히
@@ -231,29 +389,85 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 반패턴이다).
   void _syncPopups() {
     if (!mounted) return;
-    final target = resolveHomePopupTarget(
-      bluetoothOff: _beaconState is BeaconBluetoothOff,
-      codeConditionRaw: _codeConditionRaw,
-    );
+    // 홈 탭이 숨겨져 있으면 무엇도 띄우지 않는다 — 숨은 홈이 기록 탭 위로
+    // 코드 입력 팝업을 띄우던 경로를 여기서 끊는다(리뷰 Important 3).
+    final target = _visible
+        ? resolveHomePopupTarget(
+            bluetoothOff: _beaconState is BeaconBluetoothOff,
+            codeConditionRaw: _codeConditionRaw,
+          )
+        : HomePopupTarget.none;
     if (target == _shownPopup) return;
 
     // 이미 떠 있는 팝업이 있으면 새 팝업을 밀어 넣기 전에 먼저 닫는다 —
     // 두 팝업이 동시에 쌓이는 일은 없어야 한다(블루투스 꺼짐이 코드 입력을
     // 곧바로 대체하는 경우가 실제로 이 경로를 탄다).
-    if (_shownPopup != HomePopupTarget.none) {
-      Navigator.of(context, rootNavigator: true).pop();
-    }
+    final previous = _shownPopupRoute;
     _shownPopup = target;
+    _shownPopupRoute = null;
+    if (previous != null) _removeOwnedRoute(previous);
 
     switch (target) {
       case HomePopupTarget.bluetoothOff:
-        _pushBluetoothOffDialog();
+        _shownPopupRoute = _pushBluetoothOffDialog();
       case HomePopupTarget.codeInput:
-        _pushCodeInputDialog();
+        _shownPopupRoute = _pushCodeInputDialog();
       case HomePopupTarget.none:
         break;
     }
   }
+
+  /// 이 화면이 소유하는 팝업 라우트를 push한다. 완료(pop/removeRoute) 판정을
+  /// **라우트 정체성**으로 하는 것이 핵심이다 — 예전에는 `_shownPopup`
+  /// enum만 비교해서, 이미 다른 팝업으로 교체된 뒤에 도착한 옛 팝업의
+  /// 완료가 자기 자신인 줄 알고 추적을 `none`으로 되돌렸다. 그러면 다음
+  /// `_syncPopups`가 `target(none) == _shownPopup(none)`으로 조기 반환해
+  /// **살아 있는 새 팝업이 영원히 남는다** — 코드 입력 팝업이 이렇게 새면
+  /// 비콘이 범위를 벗어난 뒤에도 출석이 제출된다(리뷰 Critical 1).
+  Route<void> _pushOwnedRoute(Route<void> route) {
+    _ownedRoutes.add(route);
+    unawaited(
+      _rootNavigator.push<void>(route).then((_) {
+        _ownedRoutes.remove(route);
+        if (identical(_shownPopupRoute, route)) {
+          _shownPopup = HomePopupTarget.none;
+          _shownPopupRoute = null;
+        }
+      }),
+    );
+    return route;
+  }
+
+  Route<void> _pushOwnedPopup(WidgetBuilder builder) => _pushOwnedRoute(
+    buildAppPopupRoute<void>(context: context, navigator: _rootNavigator, builder: builder),
+  );
+
+  /// [route]만 정확히 닫는다. `Navigator.pop()`은 "스택 맨 위"를 닫을 뿐
+  /// 정체성을 모르므로, 우리 팝업 위에 다른 루트 라우트가 얹혀 있으면
+  /// 엉뚱한 것을 닫는다(리뷰 Important 6).
+  void _removeOwnedRoute(Route<void> route) {
+    if (!_ownedRoutes.remove(route)) return;
+    if (route.isActive) _rootNavigator.removeRoute(route);
+  }
+
+  /// 소유 목록을 비우고 그 내용을 돌려준다. 추적 상태를 먼저 지우기 위한
+  /// 것이라 실제 제거([_removeRoutes])와 분리돼 있다 — 빌드 단계에서는
+  /// 내비게이션을 할 수 없기 때문이다.
+  List<Route<void>> _takeOwnedPopups() {
+    _shownPopup = HomePopupTarget.none;
+    _shownPopupRoute = null;
+    final routes = List<Route<void>>.of(_ownedRoutes);
+    _ownedRoutes.clear();
+    return routes;
+  }
+
+  void _removeRoutes(List<Route<void>> routes) {
+    for (final route in routes) {
+      if (route.isActive) _rootNavigator.removeRoute(route);
+    }
+  }
+
+  void _closeOwnedPopups() => _removeRoutes(_takeOwnedPopups());
 
   /// 블루투스 꺼짐 팝업(Figma `339:1676`)을 다이얼로그로 띄운다. 블로킹
   /// 팝업이라 스크림 탭으로도 시스템 뒤로가기로도 닫히지 않는다
@@ -261,25 +475,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// false`) — 사용자가 빠져나가는 길은 블루투스를 직접 켜서 조건 자체를
   /// 거짓으로 만들거나(그러면 다음 비콘 이벤트에서 [_syncPopups]가 스스로
   /// 닫는다), 버튼으로 설정 화면에 가는 것뿐이다.
-  void _pushBluetoothOffDialog() {
-    showAppPopup<void>(
-      context: context,
-      builder: (context) => PopScope(
+  Route<void> _pushBluetoothOffDialog() {
+    return _pushOwnedPopup(
+      (context) => PopScope(
         canPop: false,
         child: _BluetoothOffPopupContent(
           onOpenSettings: () => ref.read(openBluetoothSettingsProvider)(),
         ),
       ),
-    ).then((_) {
-      // 우리가 [_syncPopups]로 직접 pop한 게 아니라 다른 경로로 닫혔더라도
-      // (예: 이론상의 향후 변경) _shownPopup을 반드시 되돌린다. 단, 이
-      // then()이 실행되는 시점에 이미 다른 팝업으로 전이돼 있었다면
-      // (_shownPopup이 더 이상 bluetoothOff가 아니라면) 그 최신 상태를
-      // 덮어써서는 안 된다.
-      if (mounted && _shownPopup == HomePopupTarget.bluetoothOff) {
-        setState(() => _shownPopup = HomePopupTarget.none);
-      }
-    });
+    );
   }
 
   /// 출석코드 입력 팝업(Figma `339:1683`)을 다이얼로그로 띄운다. Figma에
@@ -289,10 +493,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 닫는다. 그래서 스크림 탭으로도 시스템 뒤로가기로도 닫히지 않게 뒀다
   /// (`PopScope(canPop: false)`) — 닫는 방법이 아예 없는 게 아니라, 그
   /// 방법이 사용자 조작이 아니라 조건 자체의 전이라는 뜻이다.
-  void _pushCodeInputDialog() {
-    showAppPopup<void>(
-      context: context,
-      builder: (context) => PopScope(
+  Route<void> _pushCodeInputDialog() {
+    // 팝업을 새로 여는 것은 언제나 새 시도의 시작이다 — 이전에 열렸을 때
+    // 남은 오답 메시지·재시도 버튼을 끌고 오지 않는다. 특히 재시도 버튼이
+    // 살아남으면 그 버튼이 옛 `_lastOtpCode`를 다시 쏘아 올린다.
+    // (`AppOtpInput`은 다이얼로그마다 새로 만들어지므로 입력 칸은 이미
+    // 비어 있다.)
+    _codeEntryState.update(
+      submitting: false,
+      clearInvalidCodeMessage: true,
+      needsManualRetry: false,
+    );
+    return _pushOwnedPopup(
+      (context) => PopScope(
         canPop: false,
         child: ListenableBuilder(
           listenable: _codeEntryState,
@@ -304,11 +517,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
-    ).then((_) {
-      if (mounted && _shownPopup == HomePopupTarget.codeInput) {
-        setState(() => _shownPopup = HomePopupTarget.none);
-      }
-    });
+    );
   }
 
   void _onOtpCompleted(String code) {
@@ -318,23 +527,62 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _retry() async {
     final code = _lastOtpCode;
     if (code == null) return;
-    _codeEntryState.update(needsManualRetry: false);
     await _submitCode(code);
   }
 
   Future<void> _submitCode(String code) async {
+    // 진행 중이면 아무것도 하지 않는다. OTP 칸의 비활성화(`enabled:
+    // !submitting`)는 다음 리빌드에서야 반영되므로 그 사이에 두 번째
+    // `onCompleted`가 끼어들 수 있고, 수동 재시도 버튼도 리빌드 전에 두 번
+    // 눌릴 수 있다(리뷰 Important 4).
+    if (_codeEntryState.submitting) return;
+
     final session = _activeSession;
     final clubId = _bootstrappedClubId;
     if (session == null || clubId == null) return;
 
+    // 4자리를 채운 순간과 요청이 나가는 순간 사이에 범위를 벗어날 수 있고,
+    // 팝업이 어떤 이유로든 새어 나온 상태일 수도 있다 — 제출 직전에 조건을
+    // 다시 확인한다. 이 화면의 핵심 보증("비콘 감지 AND 활성 세션")은
+    // 팝업의 존재가 아니라 이 검사가 지킨다(리뷰 Critical 1).
+    if (!_visible || !_codeConditionRaw) return;
+
+    final submitGeneration = ++_submitGeneration;
+    final bootstrapGeneration = _bootstrapGeneration;
+    // 이 요청이 아직 최신인가. `mounted`를 클로저 안에 숨기면
+    // `use_build_context_synchronously` 린트가 가드를 인식하지 못하므로
+    // 조건식만 뽑아 두고 `mounted`는 호출부에 그대로 남긴다.
+    bool isLatest() =>
+        submitGeneration == _submitGeneration && bootstrapGeneration == _bootstrapGeneration;
+
     _lastOtpCode = code;
-    _codeEntryState.update(submitting: true, clearInvalidCodeMessage: true);
+    // 재시도 버튼은 이 요청이 도는 동안 사라져야 한다 — 남아 있으면 그
+    // 버튼이 방금 새로 대입된 `_lastOtpCode`로 두 번째 요청을 겹쳐 띄운다.
+    _codeEntryState.update(
+      submitting: true,
+      clearInvalidCodeMessage: true,
+      needsManualRetry: false,
+    );
 
-    final result = await ref
-        .read(attendanceControllerProvider)
-        .submit(clubId: clubId, sessionId: session.sessionId, otpCode: code);
+    final CheckInResult result;
+    try {
+      result = await ref
+          .read(attendanceControllerProvider)
+          .submit(clubId: clubId, sessionId: session.sessionId, otpCode: code);
+    } catch (_) {
+      // `AttendanceController`는 `ApiException`만 `CheckInResult`로 접는다 —
+      // 그 밖의 예외(파싱 실패 등)가 새면 `submitting`이 true로 굳어 입력란이
+      // 영구히 잠기고, `_onOtpCompleted`가 `unawaited`로 부르므로 처리되지
+      // 않은 비동기 오류가 된다(리뷰 Important 4).
+      if (!mounted || !isLatest()) return;
+      _codeEntryState.update(submitting: false, needsManualRetry: true);
+      showAppToast(context, '출석 처리에 실패했습니다. 다시 시도해주세요.');
+      return;
+    }
 
-    if (!mounted) return;
+    // 오래된 결과가 새 결과 뒤에 UI를 덮어쓰지 않게 한다. 클럽이 바뀌었다면
+    // 이 응답은 이전 클럽의 것이므로 반영해서는 안 된다.
+    if (!mounted || !isLatest()) return;
     _codeEntryState.update(submitting: false);
 
     switch (result) {
@@ -344,19 +592,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // 않으면 아래에서 여는 출석완료 팝업이 이미 떠 있는 코드 입력
         // 팝업 위에 겹쳐 쌓인다.
         _syncPopups();
-        await showAttendanceSuccessSheet(context, status: status);
+        _pushOwnedRoute(
+          buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
+        );
       case CheckInInvalidCode():
         _otpController.shake();
-        if (mounted) {
-          _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
-        }
+        _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _attendanceDone = true);
         _syncPopups();
-        if (mounted) showAppToast(context, '이미 출석 처리되었습니다');
+        showAppToast(context, '이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
         _codeEntryState.update(needsManualRetry: true);
-        if (mounted) showAppToast(context, message);
+        showAppToast(context, message);
     }
   }
 
@@ -373,8 +621,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
 
-    if (_bootstrappedClubId != session.clubId) {
+    // 홈 탭이 숨어 있는 동안에는 부트스트랩하지 않는다 — `IndexedStack`은
+    // 숨은 브랜치도 계속 build하므로, 이 가드가 없으면 숨은 채로 처음
+    // 마운트된 홈이 곧장 BLE 스캔을 시작한다. 다시 보이는 순간
+    // `didChangeDependencies` → `build()` 순서로 여기 다시 들어온다.
+    if (_visible && _bootstrappedClubId != session.clubId) {
+      final isClubChange = _bootstrappedClubId != null;
       _bootstrappedClubId = session.clubId;
+      if (isClubChange) _resetClubScopedState();
       _bootstrap(session.clubId);
     }
 
