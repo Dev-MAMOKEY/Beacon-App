@@ -257,6 +257,34 @@ void main() {
     expect(_badgeColor(tester, '3'), isNotNull);
   });
 
+  testWidgets('하루에 세션이 여러 개면 가장 무거운 상태의 색으로 칠한다', (tester) async {
+    // 잡아야 할 잘못된 구현: 그 날의 **첫** 기록이나 **마지막** 기록의 상태를
+    // 그대로 쓴다 — 출석 하나와 결석 하나가 같은 날에 있으면 결석이 파란
+    // "출석" 색에 가려져 사용자가 영영 못 본다.
+    //
+    // 두 날짜의 순서를 서로 뒤집어 둔 이유: 3일([출석, 결석])만 있으면
+    // "마지막 기록을 쓴다"는 구현이 우연히 정답과 같아 통과한다(실제로
+    // 그렇게 망가뜨려 확인했다). 5일([결석, 출석])이 그 구현을 잡는다.
+    final repo = _RecordingRecordsRepository(
+      responses: {
+        (2026, 8): _monthly(
+          year: 2026,
+          month: 8,
+          records: [
+            _record(day: 3, status: AttendanceStatus.present, name: '오전 세션'),
+            _record(day: 3, status: AttendanceStatus.absent, name: '오후 세션'),
+            _record(day: 5, status: AttendanceStatus.absent, name: '오전 세션'),
+            _record(day: 5, status: AttendanceStatus.present, name: '오후 세션'),
+          ],
+        ),
+      },
+    );
+    await _pumpRecords(tester, repository: repo, now: DateTime(2026, 8, 15));
+
+    expect(_badgeColor(tester, '3'), AppColors.light.attendanceAbsent);
+    expect(_badgeColor(tester, '5'), AppColors.light.attendanceAbsent);
+  });
+
   // ---------------------------------------------------------------------
   // 월 그리드 오프셋 (일요일 시작)
   // ---------------------------------------------------------------------
