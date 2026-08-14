@@ -19,17 +19,22 @@ void main() {
     );
   });
 
-  test('maxSampleGap이 stabilizationSeconds보다 길면 생성이 거부된다', () {
-    // 잡아야 할 잘못된 구현: 생성자에 검증이 없어 이 조합도 그냥 통과시킨다
-    // — 그러면 3초 침묵 뒤에 온 샘플 하나가 5초짜리 "연속 감지"로 둔갑할 수
-    // 있다.
+  test('maxSampleGap이 stabilizationSeconds보다 길면 릴리즈에서도 생성이 거부된다', () {
+    // 잡아야 할 잘못된 구현 두 가지:
+    // 1) 생성자에 검증이 아예 없어 이 조합도 그냥 통과시킨다 — 그러면 3초
+    //    침묵 뒤에 온 샘플 하나가 5초짜리 "연속 감지"로 둔갑할 수 있다.
+    // 2) 검증이 `assert`뿐이다. `assert`는 릴리즈 빌드에서 통째로 제거되므로
+    //    프로덕션에서는 1)과 완전히 같아진다. `AssertionError`는
+    //    `ArgumentError`가 아니므로, 이 기대는 assert만 쓰는 구현에서
+    //    (디버그 모드에서조차) 실패한다 — 그게 이 테스트가 릴리즈 구멍을
+    //    지목하는 방식이다.
     expect(
       () => BeaconScanConfig(
         uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
         stabilizationSeconds: 2,
         maxSampleGap: const Duration(seconds: 5),
       ),
-      throwsA(isA<AssertionError>()),
+      throwsA(isA<ArgumentError>()),
     );
   });
 
@@ -52,7 +57,7 @@ void main() {
     test('rssiStabilizationSeconds가 기본 maxSampleGap(2초)보다 짧으면 그 값에 맞춰 줄인다', () {
       // 잡아야 할 잘못된 구현: maxSampleGap을 항상 고정 2초로 넘겨, 서버가
       // stabilizationSeconds를 1초로 내려준 클럽에서 BeaconScanConfig
-      // 생성 자체가 AssertionError로 죽는다.
+      // 생성 자체가 ArgumentError로 죽는다.
       const serverConfig = BeaconConfig(
         uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
         lateThresholdMinutes: 10,
