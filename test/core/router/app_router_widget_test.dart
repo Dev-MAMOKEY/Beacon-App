@@ -112,7 +112,7 @@ class _CountingRecordsRepository implements RecordsRepository {
           sessionId: 1,
           sessionName: '정기모임',
           // 어느 달이든 1일에는 기록이 있다 — 테스트가 탭할 날짜다.
-          date: DateTime(year, month),
+          date: DateTime.utc(year, month),
           status: AttendanceStatus.present,
         ),
       ],

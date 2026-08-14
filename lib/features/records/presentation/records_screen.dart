@@ -8,6 +8,7 @@ import '../../../components/ui/card.dart';
 import '../../../components/ui/sheet.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/time/kst.dart';
 import '../../auth/presentation/session_controller.dart';
 import '../data/records_dto.dart';
 import '../data/records_repository.dart';
@@ -154,10 +155,13 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
   Map<int, List<AttendanceRecordItem>> get _recordsByDay {
     final byDay = <int, List<AttendanceRecordItem>>{};
     for (final record in _records?.records ?? const <AttendanceRecordItem>[]) {
-      // 서버가 준 날짜가 지금 보고 있는 달이 아니면 캘린더에 얹지 않는다 —
-      // 그러지 않으면 다른 달의 1일이 이 달의 1일 칸을 칠한다.
-      if (record.date.year != _year || record.date.month != _month) continue;
-      (byDay[record.date.day] ??= []).add(record);
+      // 서버가 준 UTC 시각을 KST 벽시계로 옮긴 뒤에 날짜 칸을 정한다 —
+      // 그대로 읽으면 KST로 9일 새벽인 세션이 8일 칸에 붙는다(이슈 #12).
+      final date = toKst(record.date);
+      // 지금 보고 있는 달이 아니면 캘린더에 얹지 않는다 — 그러지 않으면
+      // 다른 달의 1일이 이 달의 1일 칸을 칠한다.
+      if (date.year != _year || date.month != _month) continue;
+      (byDay[date.day] ??= []).add(record);
     }
     return byDay;
   }

@@ -98,7 +98,8 @@ AttendanceRecordItem _record({
   return AttendanceRecordItem(
     sessionId: year * 10000 + month * 100 + day,
     sessionName: name,
-    date: DateTime(year, month, day),
+    // 서버 payload와 같은 모양으로 만든다 — ISO 8601 UTC(`…Z`)다.
+    date: DateTime.utc(year, month, day),
     status: status,
     checkedAt: checkedAt,
   );
@@ -433,6 +434,62 @@ void main() {
   });
 
   // ---------------------------------------------------------------------
+  // UTC → KST (이슈 #12 "시간이 KST 기준으로 표시된다")
+  // ---------------------------------------------------------------------
+  testWidgets('UTC로 내려온 기록이 KST 날짜 칸에 놓인다', (tester) async {
+    // 잡아야 할 잘못된 구현: `DateTime.parse`가 돌려준 UTC DateTime의
+    // `.day`를 그대로 읽는다. 8일 16:00Z는 KST로 **9일** 01:00이므로 9일
+    // 칸이 칠해져야 하는데, 변환을 빼면 8일 칸이 칠해진다.
+    final repo = _RecordingRecordsRepository(
+      responses: {
+        (2026, 8): _monthly(
+          year: 2026,
+          month: 8,
+          records: [
+            AttendanceRecordItem(
+              sessionId: 1,
+              sessionName: '심야 세션',
+              date: DateTime.utc(2026, 8, 8, 16),
+              status: AttendanceStatus.present,
+            ),
+          ],
+        ),
+      },
+    );
+    await _pumpRecords(tester, repository: repo, now: DateTime(2026, 8, 15));
+
+    expect(_badgeColor(tester, '9'), AppColors.light.attendancePresent);
+    expect(_badgeColor(tester, '8'), isNull);
+  });
+
+  testWidgets('처리 시각이 KST로 표시된다', (tester) async {
+    // 잡아야 할 잘못된 구현: UTC 시각을 그대로 찍는다 — 10:12Z를 "10:12"로
+    // 보여준다. KST로는 19:12다.
+    final repo = _RecordingRecordsRepository(
+      responses: {
+        (2026, 8): _monthly(
+          year: 2026,
+          month: 8,
+          records: [
+            _record(
+              day: 3,
+              status: AttendanceStatus.late,
+              checkedAt: DateTime.utc(2026, 8, 3, 10, 12),
+            ),
+          ],
+        ),
+      },
+    );
+    await _pumpRecords(tester, repository: repo, now: DateTime(2026, 8, 15));
+
+    await tester.tap(_calendarText('3'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('19:12 처리'), findsOneWidget);
+    expect(find.text('10:12 처리'), findsNothing);
+  });
+
+  // ---------------------------------------------------------------------
   // 탭 가시성
   // ---------------------------------------------------------------------
   testWidgets('숨어 있는 동안에는 조회하지 않고, 보이는 순간 조회한다', (tester) async {
@@ -553,7 +610,7 @@ void main() {
               day: 3,
               status: AttendanceStatus.late,
               name: '8월 첫 정기모임',
-              checkedAt: DateTime(2026, 8, 3, 19, 7),
+              checkedAt: DateTime.utc(2026, 8, 3, 10, 7),
             ),
             _record(day: 3, status: AttendanceStatus.present, name: '뒤풀이'),
             _record(day: 4, status: AttendanceStatus.present, name: '다른 날 세션'),

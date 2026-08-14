@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/time/kst.dart';
 import '../../attendance/data/attendance_dto.dart';
 import '../data/records_dto.dart';
 import 'records_calendar.dart';
@@ -69,7 +70,8 @@ class _SessionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
     final typography = Theme.of(context).extension<AppTypography>()!;
-    final checkedAt = record.checkedAt;
+    // 서버는 UTC로 내려준다 — 화면에는 KST로 보여야 한다(이슈 #12).
+    final checkedAt = record.checkedAt == null ? null : toKst(record.checkedAt!);
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
