@@ -1040,6 +1040,258 @@ void main() {
     _expectNoLeftoverPopupRoute(routes);
   });
 
+  testWidgets('응답이 도착할 때 홈이 숨겨져 있으면 완료 팝업을 다른 탭 위로 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `_syncPopups`에만 `_visible` 가드를 두고 완료
+    // 팝업 push에는 두지 않는다. 기존 가시성 테스트는 전부 **비콘 이벤트
+    // 시점**에 발동하므로, **응답 완료 시점** 경로는 어떤 테스트도 지나가지
+    // 않았다. 그 결과 전체 스크림을 가진 모달이 사용자가 보고 있는 탭 위에
+    // 뜨고, 홈은 이미 숨겨져 `_onBecameHidden`이 다시 불리지 않으므로
+    // 확인을 누르기 전엔 앱을 되찾을 수 없다(리뷰 Important 1).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present)
+      ..gate = gate;
+    final (container: _, :routes, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    // 응답이 오기 전에 다른 탭으로 옮긴다.
+    visible.value = false;
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석 완료!'), findsNothing, reason: '숨은 홈이 다른 탭 위로 모달을 띄우면 안 된다');
+    _expectNoLeftoverPopupRoute(routes);
+    // 서버가 인정한 출석은 잊으면 안 된다 — 돌아왔을 때 중복 제출을 부른다.
+    visible.value = true;
+    await tester.pumpAndSettle();
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '이미 출석한 세션이다');
+    expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
+  });
+
+  testWidgets('응답이 도착할 때 홈이 숨겨져 있으면 실패 토스트도 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 홈의 토스트 호출부에 `_visible` 가드가 없다.
+    // `showAppToast`는 `AppShell`의 공유 `ScaffoldMessenger`를 잡으므로 숨은
+    // 브랜치가 띄운 토스트가 지금 보이는 탭 위에 뜬다. 마이페이지는 이미
+    // 같은 가드를 두고 있었다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..gate = gate;
+    final (container: _, routes: _, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    visible.value = false;
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsNothing, reason: '숨은 홈이 다른 탭 위로 토스트를 쏘면 안 된다');
+  });
+
+  testWidgets('보이는 동안 실패하면 토스트가 실제로 뜬다', (tester) async {
+    // 부정 단언만 있으면 `_showToastIfVisible`을 빈 함수로 만들거나 호출을
+    // 통째로 지워도 통과한다 — 리뷰에서 실제로 그 변이가 살아남았다.
+    // 긍정 짝이 있어야 "가려야 할 때 가린다"와 "보여야 할 때 보인다"가
+    // 함께 고정된다(리뷰 Important 3).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'));
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
+  });
+
+  testWidgets('보이는 동안 이미 출석 처리된 세션이면 그 토스트도 실제로 뜬다', (tester) async {
+    // `ALREADY_CHECKED_IN` 분기의 토스트 가드는 어떤 테스트도 지나가지
+    // 않아, 가드를 풀어도 통째로 지워도 통과했다(리뷰 Important 3).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.alreadyCheckedIn, '이미 출석했습니다.'));
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('이미 출석 처리되었습니다'), findsOneWidget);
+  });
+
+  testWidgets('앱이 백그라운드인 채 응답이 오면 완료 팝업 라우트를 쌓지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 가드를 `_visible`이 아니라 `_tabVisible`로 둔다.
+    // 탭은 그대로 선택돼 있는데 폰이 잠긴 경우가 정확히 그 상황이다 —
+    // 모달이 그대로 push되고, 복귀하면 스크림 뒤에 갇힌다(리뷰 Important 2).
+    //
+    // **텍스트가 아니라 라우트 스택을 봐야 한다** — 백그라운드 상태에서는
+    // 라우트가 스택에 있어도 `find.text`가 잡지 못한다(리뷰 확인).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present)
+      ..gate = gate;
+    final (container: _, :routes, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    // 탭은 그대로 둔 채 앱만 백그라운드로 보낸다.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    _expectNoLeftoverPopupRoute(routes, reason: '탭이 아니라 앱이 가려진 경우에도 모달을 쌓으면 안 된다');
+  });
+
+  testWidgets('앱이 백그라운드인 채 응답이 오면 실패 토스트도 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 토스트 가드를 `_visible`이 아니라 `_tabVisible`로
+    // 둔다. 탭은 선택돼 있는데 폰이 잠긴 경우를 놓친다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..gate = gate;
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    // **백그라운드 상태에서 바로 검사하면 안 된다** — `paused`에서는 프레임이
+    // 꺼져 있어 토스트를 띄웠더라도 `SnackBar`가 렌더되지 않고, 그러면 잘못된
+    // 구현도 통과한다(실제로 `_tabVisible` 변이가 여기서 살아남았다).
+    // 복귀시켜 큐에 들어간 토스트가 있으면 드러나게 한다.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('숨겨진 동안 이미 출석 처리된 세션이면 그 토스트도 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `ALREADY_CHECKED_IN` 분기의 토스트만 가드를
+    // 빠뜨린다. 이 분기의 숨김 경로는 어떤 테스트도 지나가지 않았다
+    // (리뷰 Important 3).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.alreadyCheckedIn, '이미 출석했습니다.'))
+      ..gate = gate;
+    final (container: _, routes: _, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    visible.value = false;
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('탭으로 돌아온 뒤 응답이 도착해도 인정된 출석을 잊지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 응답 유효성을 `_bootstrapGeneration`으로 판정한다.
+    // `_onBecameVisible()`이 새 부트스트랩을 시작하며 그 세대를 올리므로,
+    // 제출 → 탭 이동 → **응답 전에 복귀**하면 클럽은 그대로인데 응답이 남의
+    // 것으로 취급돼 통째로 버려진다. 그러면 서버가 인정한 출석을 잊고
+    // 입력란이 다시 열려 중복 제출을 부른다(리뷰 Important 1).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present)
+      ..gate = gate;
+    final (container: _, routes: _, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    // 응답이 오기 전에 나갔다가 **돌아온다**.
+    visible.value = false;
+    await tester.pumpAndSettle();
+    visible.value = true;
+    for (var i = 0; i < 5; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+      await tester.pumpAndSettle();
+    }
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('출석코드 입력'),
+      findsNothing,
+      reason: '서버가 인정한 출석을 잊으면 중복 제출을 부른다',
+    );
+    expect(repo.checkInArgs, hasLength(1));
+  });
+
   testWidgets('잠깐 포커스를 잃은 것(inactive)만으로는 스캔도 입력도 잃지 않는다', (tester) async {
     // 잡아야 할 잘못된 구현: `inactive`를 백그라운드로 친다. `inactive`는
     // 제어센터·알림 그림자·시스템 다이얼로그처럼 **ranging이 멈추지 않는**

@@ -514,6 +514,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// `await`이 하나라도 끼는 순간 활성화될 함정을 구조적으로 없애는 것이다.
   /// 아래 `_removeOwnedRoute`가 라우트 객체를 필요로 하므로 비용도 0이다.
   Route<void> _pushOwnedRoute(Route<void> route) {
+    // 이 화면이 라우트를 push하는 **유일한** 통로다. 호출부마다 가드를
+    // 기억해야 하는 구조라 실제로 한 곳(완료 팝업)이 빠져 있었고, 그
+    // 결과 모달이 다른 탭 위에 떴다(리뷰 Important 1).
+    //
+    // 이건 **디버그 트립와이어일 뿐 보호 장치가 아니다** — `assert`는
+    // 릴리즈에서 사라진다. 실제 보호는 호출부 세 곳의 `_visible` 검사이고,
+    // 이 줄은 다음에 push 지점을 추가하는 사람이 가드를 잊으면 개발 중에
+    // 큰 소리로 실패하게 만드는 용도다.
+    assert(_visible, '숨겨진 홈이 라우트를 push하면 다른 탭 위에 뜬다 — 호출부에 가시성 가드를 두세요');
     _ownedRoutes.add(route);
     unawaited(
       _rootNavigator.push<void>(route).then((_) {
@@ -548,6 +557,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final routes = List<Route<void>>.of(_ownedRoutes);
     _ownedRoutes.clear();
     return routes;
+  }
+
+  /// 홈 탭이 실제로 보일 때만 토스트를 띄운다.
+  ///
+  /// `showAppToast`는 `AppShell`이 `navigationShell` 위에 하나만 두는 공유
+  /// `ScaffoldMessenger`를 잡는다 — 숨은 브랜치가 띄운 토스트는 **사용자가
+  /// 지금 보고 있는 탭 위에** 뜬다. 마이페이지는 이미 같은 가드를 두고
+  /// 있었는데 홈에만 없었다(리뷰 Important 2).
+  void _showToastIfVisible(String message) {
+    if (!_visible) return;
+    showAppToast(context, message);
   }
 
   void _removeRoutes(List<Route<void>> routes) {
@@ -637,12 +657,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (!_visible || !_codeConditionRaw) return;
 
     final submitGeneration = ++_submitGeneration;
-    final bootstrapGeneration = _bootstrapGeneration;
     // 이 요청이 아직 최신인가. `mounted`를 클로저 안에 숨기면
     // `use_build_context_synchronously` 린트가 가드를 인식하지 못하므로
     // 조건식만 뽑아 두고 `mounted`는 호출부에 그대로 남긴다.
+    //
+    // 두 번째 항이 `_bootstrapGeneration` 비교가 **아니라** 클럽 id 비교인
+    // 이유: 세대는 "클럽이 바뀌었나"와 "탭이 돌아왔나"를 한 변수에 섞어
+    // 담는다. `_onBecameVisible()`이 새 부트스트랩을 시작하며 세대를 올리
+    // 므로, 제출 → 탭 이동 → **응답 전에 복귀**하면 클럽은 그대로인데
+    // 응답이 남의 것으로 취급돼 통째로 버려졌다. 그러면 서버가 인정한
+    // 출석을 잊고 입력란이 다시 열려 중복 제출을 부른다(리뷰 Important 1).
+    // 정말로 버려야 하는 경우는 클럽이 바뀐 것뿐이다.
     bool isLatest() =>
-        submitGeneration == _submitGeneration && bootstrapGeneration == _bootstrapGeneration;
+        submitGeneration == _submitGeneration && clubId == _bootstrappedClubId;
 
     _lastOtpCode = code;
     // 재시도 버튼은 이 요청이 도는 동안 사라져야 한다 — 남아 있으면 그
@@ -665,7 +692,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       // 않은 비동기 오류가 된다(리뷰 Important 4).
       if (!mounted || !isLatest()) return;
       _codeEntryState.update(submitting: false, needsManualRetry: true);
-      showAppToast(context, '출석 처리에 실패했습니다. 다시 시도해주세요.');
+      _showToastIfVisible('출석 처리에 실패했습니다. 다시 시도해주세요.');
       return;
     }
 
@@ -677,23 +704,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     switch (result) {
       case CheckInSuccess(:final status):
         setState(() => _checkedInSessionId = session.sessionId);
-        // 코드 입력 조건이 거짓이 됐으니 그 팝업부터 닫는다 — 그러지
-        // 않으면 아래에서 여는 출석완료 팝업이 이미 떠 있는 코드 입력
-        // 팝업 위에 겹쳐 쌓인다.
+        // 코드 입력 조건이 거짓이 됐으니 그 팝업부터 닫는다. 순서를 뒤집어도
+        // 최종 내비게이터 상태는 같지만(한 프레임 동안만 겹친다), 겹쳐 보이는
+        // 프레임을 만들지 않는 쪽이 낫다 — 불변식이 아니라 표시상의 선택이다.
         _syncPopups();
-        _pushOwnedRoute(
-          buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
-        );
+        // `_syncPopups`는 `_visible`을 보지만 이 push는 보지 않았다 — 응답이
+        // 도착할 때 홈이 숨겨져 있으면 전체 스크림을 가진 모달 완료 팝업이
+        // **사용자가 지금 보고 있는 다른 탭 위에** 뜬다. 홈은 이미 숨겨져
+        // 있어 `_onBecameHidden`이 다시 불리지 않고 `_onBecameVisible`도
+        // 소유 라우트를 닫지 않으므로, 확인을 누르기 전엔 앱을 되찾을 수
+        // 없었다(리뷰 Important 1).
+        //
+        // 상태(`_checkedInSessionId`)는 위에서 이미 반영했다 — 숨겨졌다는
+        // 이유로 서버가 인정한 출석을 잊으면 돌아왔을 때 중복 제출을 부른다.
+        //
+        // 다만 돌아왔을 때 본문의 "출석이 완료되었습니다"는 **비콘이 다시
+        // 감지돼야만** 보인다(`_detectedSection` 안에 있다). 방을 이미
+        // 떠났다면 그 문구를 영영 못 볼 수도 있다 — 알림을 감춘 대가이며,
+        // 중복 제출을 부르는 것보다는 낫다는 판단이다(리뷰 Minor 1).
+        if (_visible) {
+          _pushOwnedRoute(
+            buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
+          );
+        }
       case CheckInInvalidCode():
         _otpController.shake();
         _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _checkedInSessionId = session.sessionId);
         _syncPopups();
-        showAppToast(context, '이미 출석 처리되었습니다');
+        _showToastIfVisible('이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
         _codeEntryState.update(needsManualRetry: true);
-        showAppToast(context, message);
+        _showToastIfVisible(message);
     }
   }
 
