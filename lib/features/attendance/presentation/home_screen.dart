@@ -13,6 +13,7 @@ import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/time/kst.dart';
 import '../../auth/presentation/session_controller.dart';
 import '../../beacon/data/beacon_config_dto.dart';
 import '../../beacon/data/beacon_config_repository.dart';
@@ -102,7 +103,12 @@ class _CodeEntryState extends ChangeNotifier {
 /// 코드 입력란을 연다. `lib/core/router/app_router.dart`의 `/home` 자리
 /// 표시자를 이 화면으로 교체한다.
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.clock = DateTime.now});
+
+  /// 지금 시각을 주는 함수. 기록 화면과 같은 형태로 주입 가능하게 둔다 —
+  /// KST 경계를 넘는 시각을 테스트가 직접 만들 수 있어야 하기 때문이다.
+  @visibleForTesting
+  final DateTime Function() clock;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -457,8 +463,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  /// 지금의 **KST 벽시계**. 요약 카드가 조회할 달과 오늘 날짜 라벨이 모두
+  /// 이 값을 기준으로 정해진다.
+  ///
+  /// 기기 시계를 그대로 쓰면 UTC 기기에서 `2026-08-31T20:00Z`(= KST 9월 1일)
+  /// 일 때 **기록 탭은 9월을 열고 홈의 요약 카드는 8월을 조회한다** — 라벨은
+  /// 같은데 가리키는 달이 조용히 다르다. 기록 화면은 이미 `toKst`를 쓰고
+  /// 있었고 홈만 `kst.dart`를 임포트조차 하지 않았다(리뷰 Important).
+  ///
+  /// **읽기 전용 벽시계다.** `.year`/`.month`/`.day`로 읽는 것 외에는 쓰면
+  /// 안 된다 — 서버로 보내거나 다른 시각과 비교하면 9시간 어긋난다
+  /// (`kst.dart`의 계약).
+  DateTime get _nowKst => toKst(widget.clock());
+
   Future<void> _loadRecords(int clubId, int generation) async {
-    final now = DateTime.now();
+    final now = _nowKst;
     try {
       final records = await ref
           .read(recordsRepositoryProvider)
@@ -466,9 +485,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       if (!_isCurrentBootstrap(generation)) return;
       setState(() => _records = records);
     } catch (_) {
-      // 요약 카드가 없어도 출석 체크 기능 자체에는 영향이 없다 — 조용히
-      // 자리표시자(대시)로 남긴다.
+      // 요약 카드가 없어도 출석 체크 기능 자체에는 영향이 없다 — 자리표시자
+      // (대시)로 남긴다.
+      //
+      // **반드시 비워야 한다.** 처음엔 아무것도 하지 않고 "조용히 대시로
+      // 남긴다"고 적어 뒀는데, 그건 최초 로드에서만 참이다. 재부트스트랩
+      // (탭 복귀·앱 재개) 때는 `_records`가 이미 차 있어서, 실패하면
+      // **이전 달 숫자가 새 달 라벨 아래 그대로 남는다**(리뷰 Important 5).
+      // 기록 화면은 같은 상황에서 이미 `_records = null`로 비우고 있었다.
+      if (!_isCurrentBootstrap(generation)) return;
+      setState(() => _records = null);
     }
+  }
+
+  /// 요약 카드에 실제로 그릴 값. **지금의 KST 달과 일치할 때만** 돌려준다.
+  ///
+  /// 조회 월은 부트스트랩 때 한 번 정해지는데 오늘 날짜 라벨은 매 빌드마다
+  /// 다시 읽는다. 화면이 살아 있는 동안 KST 자정을 넘으면 라벨만 다음 날로
+  /// 넘어가고 카드는 지난달 수치를 그대로 들고 있다 — 홈의 카드에는 월
+  /// 표시가 없어서(기록 화면과 달리) 무엇이 어긋났는지 화면상 아무 신호가
+  /// 없다(리뷰 Important 1).
+  ///
+  /// 서버 응답이 이미 `year`/`month`를 담고 있으므로 그걸 지금과 대조한다.
+  /// 어긋나면 대시로 떨어뜨린다 — 틀린 숫자를 맞는 것처럼 보여주는 것보다
+  /// 낫고, 다음 부트스트랩(탭 복귀·앱 재개)에서 스스로 복구된다.
+  MonthlyRecords? get _recordsForCurrentMonth {
+    final records = _records;
+    if (records == null) return null;
+    final now = _nowKst;
+    if (records.year != now.year || records.month != now.month) return null;
+    return records;
   }
 
   /// 비콘 감지 AND 활성 세션 AND 아직 미완료 — 블루투스 꺼짐 우선순위는
@@ -823,14 +869,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               // 가운데 정렬로 표시한다.
               Center(
                 child: Text(
-                  _formatTodayLabel(DateTime.now()),
+                  _formatTodayLabel(_nowKst),
                   style: typography.title4.copyWith(color: colors.gray2),
                 ),
               ),
               const SizedBox(height: 30),
               Center(child: _buildBeaconSection(colors, typography)),
               const SizedBox(height: 36),
-              _SummaryCards(records: _records),
+              _SummaryCards(records: _recordsForCurrentMonth),
             ],
           ),
         ),
