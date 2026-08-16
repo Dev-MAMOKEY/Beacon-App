@@ -58,6 +58,20 @@ const _activeSession = ActiveSession(
   status: 'ACTIVE',
 );
 
+/// 같은 값이라도 **매번 새 인스턴스**를 만든다.
+///
+/// `const ActiveSession(...)`은 Dart가 정규화해 같은 인자면 같은 인스턴스를
+/// 돌려주므로, 객체 동일성으로 키를 잡는 잘못된 구현을 테스트가 구별하지
+/// 못한다. 프로덕션은 HTTP 응답마다 새 DTO를 만든다.
+ActiveSession _freshSession({required int sessionId, required String sessionName}) {
+  return ActiveSession(
+    sessionId: sessionId,
+    sessionName: sessionName,
+    // 상수 접힘을 막아 매 호출이 새 인스턴스가 되게 한다.
+    status: ['ACTIVE'].first,
+  );
+}
+
 /// `SessionController.build()`가 곧장 `SessionReady`를 돌려주게 하는
 /// 테스트 더블 — 토큰 저장소·인증 리포지토리를 전부 배선할 필요 없이
 /// clubId를 곧장 확정할 수 있다.
@@ -449,10 +463,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('출석코드 입력'), findsNothing, reason: '같은 세션에 다시 열려서는 안 된다');
 
-    // 관리자가 **다른** 세션을 시작한다.
+    // 관리자가 **다른** 세션을 시작한다. 이름은 **일부러 같게** 둔다 —
+    // 동아리가 '정기모임'을 하루 두 번 여는 것이 바로 이 수정이 존재하는
+    // 이유이고, 이름으로 키를 잡는 구현은 그 경우 원래 결함을 그대로
+    // 재현하면서도 테스트는 초록으로 남는다(리뷰 Important 1).
     repo.activeSession = const ActiveSession(
       sessionId: 99,
-      sessionName: '오후 스터디',
+      sessionName: '정기모임',
       status: 'ACTIVE',
     );
     repo.results.add(AttendanceStatus.present);
@@ -467,6 +484,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('출석코드 입력'), findsOneWidget, reason: '다른 세션에는 다시 출석할 수 있어야 한다');
+    // 팝업 뒤의 본문도 함께 갱신돼야 한다 — 한쪽 읽기 지점만 고치면 화면이
+    // "출석이 완료되었습니다"라고 말하면서 동시에 코드를 요구한다
+    // (리뷰 Important 3).
+    expect(
+      find.text('오늘 출석이 완료되었습니다'),
+      findsNothing,
+      reason: '아직 출석하지 않은 세션인데 완료 문구가 남아 있으면 안 된다',
+    );
   });
 
   testWidgets('같은 세션이 그대로면 재방문해도 코드 입력 팝업이 열리지 않는다', (tester) async {
@@ -484,7 +509,14 @@ void main() {
     await tester.tap(find.text('확인'));
     await tester.pumpAndSettle();
 
-    // 세션은 그대로(sessionId 88)인 채로 탭을 떠났다 돌아온다.
+    // 세션 id는 그대로(88)지만 **새 인스턴스**로 교체한다 — 프로덕션은 응답
+    // 마다 새 DTO를 만들므로, 객체 동일성으로 키를 잡는 구현은 같은 세션을
+    // 다시 조회하는 순간 팝업을 다시 열어 중복 제출을 부른다(리뷰 codex).
+    //
+    // `const`를 쓰면 안 된다 — Dart가 같은 인자의 const 표현식을 정규화해
+    // **같은 인스턴스**를 돌려주므로, 객체 동일성 구현이 그대로 통과한다.
+    // (처음에 const로 썼다가 이 변이가 살아남는 것을 확인했다.)
+    repo.activeSession = _freshSession(sessionId: 88, sessionName: '정기모임');
     harness.visible.value = false;
     await tester.pumpAndSettle();
     harness.visible.value = true;
@@ -969,6 +1001,54 @@ void main() {
     _expectNoLeftoverPopupRoute(routes);
     // 새 클럽에서는 아직 아무 비콘도 감지되지 않았다.
     expect(find.text('비콘을 찾는 중입니다...'), findsOneWidget);
+  });
+
+  testWidgets('클럽이 바뀌면 세션 id가 같아도 출석 완료 래치가 풀린다', (tester) async {
+    // 잡아야 할 잘못된 구현: `_resetClubScopedState`에서 래치 초기화를
+    // 빠뜨린다. 세션 id는 클럽 단위로 매겨진다(`/clubs/{clubId}/sessions/
+    // {sessionId}/attendance`이고 `ActiveSession`은 clubId를 담지 않는다)
+    // — 두 클럽에 속한 부원이 클럽 7의 88번에 출석한 뒤 클럽 9로 바꿨을 때
+    // 그쪽 활성 세션도 88번이면, 출석한 적 없는 세션에 대해 입력란이 막히고
+    // 본문은 "출석이 완료되었습니다"라고 말한다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final (:container, routes: _, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    // 클럽 7의 세션 88에 출석한다.
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    // 클럽 9로 바꾼다. 그쪽 활성 세션도 **우연히 id가 88**이다.
+    (container.read(sessionControllerProvider.notifier) as _ReadySessionController).switchTo(
+      _otherClubProfile,
+    );
+    // 클럽 전환은 `await _cancelBeaconSubscription()`을 지나가야 새 스캔이
+    // 시작된다 — `fakeAsync`의 마이크로태스크 flush는 그 루트 존 future를
+    // 진행시키지 않으므로 실제 이벤트 루프를 한 번 돌려준다.
+    for (var i = 0; i < 5; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+      await tester.pumpAndSettle();
+    }
+    expect(scanner.watchCallCount, 2, reason: '새 클럽의 스캔이 실제로 다시 시작돼야 이 검사가 의미를 갖는다');
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('출석코드 입력'),
+      findsOneWidget,
+      reason: '다른 클럽의 88번 세션에는 출석한 적이 없다',
+    );
+    expect(find.text('오늘 출석이 완료되었습니다'), findsNothing);
   });
 
   // ---------------------------------------------------------------------
