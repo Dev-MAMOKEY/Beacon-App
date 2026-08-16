@@ -17,10 +17,12 @@ class AppShell extends ConsumerWidget {
 
   final StatefulNavigationShell navigationShell;
 
-  /// 지금 실제로 매칭된 전체 경로(예: `/profile/password`). 상단 바
-  /// 제목을 여기서 뽑는다 — `navigationShell.currentIndex`(브랜치 인덱스)로
-  /// 뽑으면 같은 브랜치 안에서 하위 경로로 더 들어가도(`/profile` →
-  /// `/profile/password`) 인덱스가 그대로라 제목이 안 바뀐다.
+  /// 지금 실제로 매칭된 전체 경로(예: `/records`). 상단 바 제목을 여기서
+  /// 뽑는다 — `navigationShell.currentIndex`(브랜치 인덱스)로 뽑으면 같은
+  /// 브랜치 안에서 하위 경로로 더 들어가도 인덱스가 그대로라 제목이 안
+  /// 바뀐다. #13에서 `/profile/password`가 팝업으로 바뀌면서 오늘은 그런
+  /// 하위 경로가 하나도 없지만, 첫 하위 경로가 생기는 순간 다시 문제가
+  /// 되므로 전체 경로 기준을 유지한다.
   final String currentLocation;
 
   @override
@@ -61,7 +63,6 @@ class AppShell extends ConsumerWidget {
     AppRoutes.records => '기록',
     AppRoutes.admin => '관리자',
     AppRoutes.profile => '마이페이지',
-    AppRoutes.passwordChange => '비밀번호 변경',
     _ => '',
   };
 }
