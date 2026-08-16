@@ -177,8 +177,18 @@ class _ScriptedAttendanceRepository implements AttendanceRepository {
   /// [results]를 다 쓴 뒤에도 호출되면 이 값을 돌려준다(또는 던진다).
   Object? fallbackResult;
 
+  int activeSessionCalls = 0;
+  bool activeSessionThrowsOnce = false;
+
   @override
-  Future<ActiveSession?> fetchActiveSession(int clubId) async => activeSession;
+  Future<ActiveSession?> fetchActiveSession(int clubId) async {
+    activeSessionCalls++;
+    if (activeSessionThrowsOnce) {
+      activeSessionThrowsOnce = false;
+      throw Exception('일시적 조회 실패');
+    }
+    return activeSession;
+  }
 
   @override
   Future<AttendanceStatus> checkIn({
@@ -1250,6 +1260,87 @@ void main() {
     });
   });
 
+  group('활성 세션 갱신 — 탭을 옮기지 않아도 따라잡는다', () {
+    // 부트스트랩 1회 조회만으로는 세 가지가 전부 깨진다(리뷰 Important 1):
+    // 세션 종료 후에도 팝업이 남아 종료된 세션에 제출하고, 나중에 시작된
+    // 세션은 탭을 옮겼다 돌아오기 전까지 열리지 않으며, 첫 조회가 실패하면
+    // 그 가시성 구간 내내 "세션 없음"으로 굳는다.
+
+    testWidgets('세션이 시작되면 탭을 옮기지 않아도 입력란이 열린다', (tester) async {
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: null);
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      expect(find.text('출석코드 입력'), findsNothing, reason: '사전 조건: 아직 세션이 없다');
+
+      // 관리자가 세션을 시작한다. 탭은 그대로 둔다.
+      repo.activeSession = _activeSession;
+      await tester.pump(activeSessionRefreshInterval);
+      await tester.pumpAndSettle();
+
+      expect(find.text('출석코드 입력'), findsOneWidget);
+    });
+
+    testWidgets('세션이 종료되면 열려 있던 입력란이 닫힌다', (tester) async {
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+      final (container: _, :routes, visible: _) = await _pumpHome(
+        tester,
+        scanner: scanner,
+        attendanceRepository: repo,
+      );
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      expect(find.text('출석코드 입력'), findsOneWidget);
+
+      repo.activeSession = null;
+      await tester.pump(activeSessionRefreshInterval);
+      await tester.pumpAndSettle();
+
+      expect(find.text('출석코드 입력'), findsNothing);
+      _expectNoLeftoverPopupRoute(routes);
+    });
+
+    testWidgets('첫 조회가 실패해도 다음 주기에 회복한다', (tester) async {
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+        ..activeSessionThrowsOnce = true;
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      expect(find.text('출석코드 입력'), findsNothing, reason: '사전 조건: 첫 조회가 실패했다');
+
+      await tester.pump(activeSessionRefreshInterval);
+      await tester.pumpAndSettle();
+
+      expect(find.text('출석코드 입력'), findsOneWidget);
+    });
+
+    testWidgets('숨겨진 동안에는 재조회하지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 타이머를 멈추지 않는다 — 보이지도 않는 탭이
+      // 계속 서버를 두드리고, 그 결과가 숨은 채로 팝업 상태를 흔든다.
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+      final (container: _, routes: _, :visible) = await _pumpHome(
+        tester,
+        scanner: scanner,
+        attendanceRepository: repo,
+      );
+      final before = repo.activeSessionCalls;
+
+      visible.value = false;
+      await tester.pumpAndSettle();
+      await tester.pump(activeSessionRefreshInterval * 3);
+      await tester.pumpAndSettle();
+
+      expect(repo.activeSessionCalls, before, reason: '숨은 동안에는 조회하지 않는다');
+    });
+  });
+
   testWidgets('서버 오류 메시지는 토스트가 아니라 팝업 안에 보인다', (tester) async {
     // 잡아야 할 잘못된 구현: `showAppToast`로 띄운다. 그 `SnackBar`는 셸
     // `Scaffold` 안에 그려지는데, 코드 입력 팝업이 아직 열려 있어 그 위에
@@ -1331,9 +1422,10 @@ void main() {
     // 사라진다. 수정 전(develop)에는 최소한 토스트라도 보였다(리뷰 Important 1).
     final scanner = FakeBeaconScanner();
     final gate = Completer<void>();
+    // 종결성 오류를 쓴다 — 재시도 중단 경로(#45)와 섞이지 않게 해서 이
+    // 테스트가 **표시 자리 선택만** 보게 한다.
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
-      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
-      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.sessionNotActive, '종료된 세션입니다.'))
       ..gate = gate;
     final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
@@ -1360,7 +1452,7 @@ void main() {
       findsOneWidget,
       reason: '팝업이 없으면 토스트가 유일하게 보이는 자리다',
     );
-    expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
+    expect(find.text('종료된 세션입니다.'), findsOneWidget);
   });
 
   testWidgets('재시도하면 이전 오류 메시지가 지워진다', (tester) async {

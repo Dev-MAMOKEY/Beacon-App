@@ -102,6 +102,20 @@ class _CodeEntryState extends ChangeNotifier {
 /// 홈 화면(이슈 #11) — 비콘 감지와 활성 세션의 AND 조건에서만 4자리 출석
 /// 코드 입력란을 연다. `lib/core/router/app_router.dart`의 `/home` 자리
 /// 표시자를 이 화면으로 교체한다.
+/// 홈이 보이는 동안 활성 세션을 다시 조회하는 간격.
+///
+/// 부트스트랩 1회 조회만으로는 세 가지가 전부 깨진다(리뷰 Important 1):
+/// 관리자가 세션을 종료해도 코드 팝업이 그대로 남아 종료된 세션에 제출하고,
+/// 처음에 `null`을 받은 뒤 세션이 시작되면 **탭을 옮겼다 돌아오기 전까지
+/// 입력란이 열리지 않으며**, 첫 조회가 일시적으로 실패하면 그 가시성 구간
+/// 내내 "세션 없음"으로 굳는다.
+///
+/// 15초인 이유: 출석 창은 보통 몇 분 단위이므로 이 정도면 사용자가 기다린다는
+/// 느낌 없이 따라잡는다. 더 짧게 잡으면 부원 수만큼 곱해진 요청이 세션 시작
+/// 직후 서버에 몰린다. 푸시로 세션 시작을 알리는 것은 #19 스코프다.
+@visibleForTesting
+const Duration activeSessionRefreshInterval = Duration(seconds: 15);
+
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, this.clock = DateTime.now});
 
@@ -142,6 +156,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   int _submitGeneration = 0;
 
   ActiveSession? _activeSession;
+
+  /// 활성 세션 재조회 타이머. 홈이 보이는 동안에만 돈다.
+  Timer? _sessionRefreshTimer;
   MonthlyRecords? _records;
 
   final AppOtpController _otpController = AppOtpController();
@@ -297,6 +314,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
+    _stopSessionRefresh();
     WidgetsBinding.instance.removeObserver(this);
     // 이 시점 이후에 도착하는 모든 비동기 완료를 무효화한다.
     _bootstrapGeneration++;
@@ -327,6 +345,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// 추적 상태(`_shownPopup` 등)는 어느 쪽이든 지금 바로 지운다 — 그래야 그
   /// 사이에 도착하는 이벤트가 "이미 떠 있다"고 오판하지 않는다.
   void _onBecameHidden({required bool duringBuild}) {
+    _stopSessionRefresh();
     unawaited(_stopScan());
     _beaconState = const BeaconIdle();
     final routes = _takeOwnedPopups();
@@ -382,6 +401,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     unawaited(_startBeaconScan(clubId));
     unawaited(_loadActiveSession(clubId, generation));
     unawaited(_loadRecords(clubId, generation));
+    _startSessionRefresh(clubId, generation);
+  }
+
+  /// 활성 세션을 주기적으로 다시 조회한다. 세대를 함께 넘겨, 클럽이 바뀌거나
+  /// 화면이 숨겨져 새 부트스트랩이 돌면 옛 타이머의 결과가 반영되지 않는다.
+  ///
+  /// "숨겨진 동안 조회하지 않는다"는 보증은 **두 층**이 함께 만든다 —
+  /// `_onBecameHidden`의 타이머 취소와 아래 콜백의 `!_visible` 검사다. 둘은
+  /// 서로를 가려서 **한쪽만 지우면 어떤 테스트도 실패하지 않는다**(둘 다
+  /// 지우면 실패한다). 각각이 개별로 관측 가능하다고 오해하지 않도록 적어
+  /// 둔다 — 타이머 취소는 보이지 않는 탭이 앱을 깨우지 않게 하고, 콜백
+  /// 검사는 취소와 발화 사이의 틈을 막는다.
+  void _startSessionRefresh(int clubId, int generation) {
+    _stopSessionRefresh();
+    _sessionRefreshTimer = Timer.periodic(activeSessionRefreshInterval, (_) {
+      if (!_isCurrentBootstrap(generation) || !_visible) return;
+      unawaited(_loadActiveSession(clubId, generation));
+    });
+  }
+
+  void _stopSessionRefresh() {
+    _sessionRefreshTimer?.cancel();
+    _sessionRefreshTimer = null;
   }
 
   /// [generation]이 아직 현재 부트스트랩 세대인지. 아니면 그 결과는 이미
@@ -768,7 +810,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     try {
       result = await ref
           .read(attendanceControllerProvider)
-          .submit(clubId: clubId, sessionId: session.sessionId, otpCode: code);
+          .submit(
+            clubId: clubId,
+            sessionId: session.sessionId,
+            otpCode: code,
+            // 재시도는 Dio 타임아웃(10초) 뒤에 나갈 수 있다 — 그 사이에
+            // 부원이 방을 나갔으면 보내지 않는다. 컨트롤러는 비콘을 모르므로
+            // 판정은 여기서 한다(리뷰 Important 2).
+            stillEligible: () => mounted && _visible && _codeConditionRaw,
+          );
     } catch (_) {
       // `AttendanceController`는 `ApiException`만 `CheckInResult`로 접는다 —
       // 그 밖의 예외(파싱 실패 등)가 새면 `submitting`이 true로 굳어 입력란이
@@ -825,6 +875,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       case CheckInFailed(:final message):
         _codeEntryState.update(needsManualRetry: true);
         _reportCheckInMessage(message);
+      case CheckInAborted():
+        // 실패가 아니라 **보내지 않은** 것이다. 재시도 버튼을 붙이지 않는다 —
+        // 방을 나간 사용자에게 재시도를 권하는 꼴이 된다. 팝업은 조건이
+        // 거짓이 됐으므로 `_syncPopups`가 이미 닫았거나 곧 닫는다.
+        _syncPopups();
+        _reportCheckInMessage('비콘 범위를 벗어나 출석을 보내지 않았습니다.');
     }
   }
 
