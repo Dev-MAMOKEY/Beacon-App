@@ -237,7 +237,8 @@ void _expectNoLeftoverPopupRoute(_RouteStackObserver routes, {String? reason}) {
   );
 }
 
-Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
+Future<({ProviderContainer container, _RouteStackObserver routes, ValueNotifier<bool> visible})>
+_pumpHome(
   WidgetTester tester, {
   required BeaconScanner scanner,
   required _ScriptedAttendanceRepository attendanceRepository,
@@ -263,13 +264,25 @@ Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
   // 실제 앱에서는 AppShell의 Scaffold 안에서 렌더되므로(app_router.dart),
   // 여기서도 Scaffold로 감싼다 — 그렇지 않으면 AppOtpInput의 TextField가
   // Material 조상을 찾지 못해 예외를 던진다.
+  // `StatefulShellRoute.indexedStack`이 숨은 브랜치를 감싸는 방식 그대로 —
+  // 탭 전환은 dispose가 아니라 TickerMode를 끄는 것이다. 실제 셸을 띄우지
+  // 않고도 "탭을 떠났다 돌아왔다"를 재현할 수 있다.
+  final visible = ValueNotifier<bool>(true);
+  addTearDown(visible.dispose);
+
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
         theme: buildAppTheme(),
         navigatorObservers: [routes],
-        home: const Scaffold(body: HomeScreen()),
+        home: Scaffold(
+          body: ValueListenableBuilder<bool>(
+            valueListenable: visible,
+            builder: (context, enabled, child) => TickerMode(enabled: enabled, child: child!),
+            child: const HomeScreen(),
+          ),
+        ),
       ),
     ),
   );
@@ -278,7 +291,7 @@ Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
   // 시작, 활성 세션 조회, 기록 조회) 완료까지 흘려보낸다.
   await tester.pumpAndSettle();
 
-  return (container: container, routes: routes);
+  return (container: container, routes: routes, visible: visible);
 }
 
 Future<void> _enterOtp(WidgetTester tester, String code) async {
@@ -416,6 +429,75 @@ void main() {
     expect(repo.checkInArgs.single, (7, 88, '7329'));
   });
 
+  testWidgets('출석한 뒤 다른 세션이 열리면 코드 입력 팝업이 다시 열린다', (tester) async {
+    // 잡아야 할 잘못된 구현: 출석 완료를 화면 단위 `bool`로 들고 클럽 변경
+    // 으로만 푼다. 그러면 오전 세션에 출석한 부원이 오후 세션에는 앱을
+    // 죽이기 전까지 출석할 수 없다(리뷰 Critical 1). 기록 화면은 하루
+    // 여러 세션을 명시적으로 모델링하므로 두 기능이 서로 모순된다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    // 완료 팝업을 닫는다.
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '같은 세션에 다시 열려서는 안 된다');
+
+    // 관리자가 **다른** 세션을 시작한다.
+    repo.activeSession = const ActiveSession(
+      sessionId: 99,
+      sessionName: '오후 스터디',
+      status: 'ACTIVE',
+    );
+    repo.results.add(AttendanceStatus.present);
+
+    // 탭을 떠났다 돌아오면 활성 세션을 다시 조회한다.
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+    harness.visible.value = true;
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '다른 세션에는 다시 출석할 수 있어야 한다');
+  });
+
+  testWidgets('같은 세션이 그대로면 재방문해도 코드 입력 팝업이 열리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 래치를 아예 없애거나 재방문마다 초기화한다 —
+    // 그러면 이미 출석한 세션에 대해 입력란이 계속 열려 중복 제출을 부른다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    // 세션은 그대로(sessionId 88)인 채로 탭을 떠났다 돌아온다.
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+    harness.visible.value = true;
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsNothing);
+    expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
+    expect(repo.checkInArgs, hasLength(1), reason: '같은 세션에 두 번 제출하지 않는다');
+  });
+
   testWidgets('INVALID_ATTENDANCE_CODE → 입력이 비워지고 메시지가 뜬다', (tester) async {
     // 잡아야 할 잘못된 구현: 입력을 그대로 유지하거나 메시지를 띄우지 않는다.
     final scanner = FakeBeaconScanner();
@@ -530,7 +612,7 @@ void main() {
     // 계속 화면에 남는다(조건 없이 계속 렌더).
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: _, routes: routes) = await _pumpHome(
+    final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -588,7 +670,7 @@ void main() {
     // 그대로 남는다.
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: _, routes: routes) = await _pumpHome(
+    final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -817,7 +899,7 @@ void main() {
     final scanner = FakeBeaconScanner();
     final configRepo = _DeferredBeaconConfigRepository();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: container, routes: _) = await _pumpHome(
+    final (:container, routes: _, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -864,7 +946,7 @@ void main() {
     // 새로 조회한 세션이 AND 조건을 만족시킨다 — 팝업이 그대로 살아남는다.
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: container, routes: routes) = await _pumpHome(
+    final (:container, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,

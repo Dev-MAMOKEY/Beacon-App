@@ -129,10 +129,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final _CodeEntryState _codeEntryState = _CodeEntryState();
   String? _lastOtpCode;
 
-  /// 성공 또는 ALREADY_CHECKED_IN 이후 true로 고정된다 — 그 뒤로는 비콘이
-  /// 감지되고 활성 세션이 있어도 입력란을 다시 열지 않는다(브리핑 5-1).
-  /// 클럽이 바뀌면 초기화된다.
-  bool _attendanceDone = false;
+  /// **이미 출석을 마친 세션의 id.** 성공 또는 ALREADY_CHECKED_IN에서 채워진다.
+  ///
+  /// 화면 단위 `bool`이 아니라 세션 id인 이유: `bool`로 두면 한 번 출석한 뒤
+  /// 관리자가 **다른 세션**을 열어도 입력란이 다시 열리지 않는다. 클럽 변경
+  /// 말고는 풀리는 경로가 없어서, 오전 세션에 출석한 부원이 오후 세션에는
+  /// 앱을 죽이기 전까지 출석할 수 없었다(리뷰 Critical 1). 기록 화면이 하루
+  /// 여러 세션을 명시적으로 모델링하므로 두 기능이 서로 모순됐다.
+  int? _checkedInSessionId;
+
+  /// 지금 열려 있는 활성 세션에 대해 이미 출석을 마쳤는가.
+  ///
+  /// 활성 세션이 없으면 거짓이다 — 그 경우 화면은 "출석 완료"가 아니라
+  /// "진행 중인 세션 없음"을 보여줘야 한다.
+  bool get _attendanceDone {
+    final session = _activeSession;
+    return session != null && session.sessionId == _checkedInSessionId;
+  }
 
   /// 홈 탭이 지금 실제로 사용자에게 보이는지.
   ///
@@ -262,7 +275,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _beaconState = const BeaconIdle();
     _activeSession = null;
     _records = null;
-    _attendanceDone = false;
+    _checkedInSessionId = null;
     _lastOtpCode = null;
     final routes = _takeOwnedPopups();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -598,7 +611,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     switch (result) {
       case CheckInSuccess(:final status):
-        setState(() => _attendanceDone = true);
+        setState(() => _checkedInSessionId = session.sessionId);
         // 코드 입력 조건이 거짓이 됐으니 그 팝업부터 닫는다 — 그러지
         // 않으면 아래에서 여는 출석완료 팝업이 이미 떠 있는 코드 입력
         // 팝업 위에 겹쳐 쌓인다.
@@ -610,7 +623,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _otpController.shake();
         _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
-        setState(() => _attendanceDone = true);
+        setState(() => _checkedInSessionId = session.sessionId);
         _syncPopups();
         showAppToast(context, '이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
