@@ -95,7 +95,7 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   StreamSubscription<BeaconScanState>? _beaconSub;
   BeaconScanState _beaconState = const BeaconIdle();
 
@@ -168,6 +168,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ///    다이얼로그 때문에 "숨겨졌다"고 오판하지 않는다.
   bool _visible = true;
 
+  /// 홈 **탭**이 선택돼 있는지. [_visible]은 이 값과 [_appResumed]의 AND다.
+  bool _tabVisible = true;
+
+  /// 앱이 **관측 가능한** 상태인지 — 즉 OS가 아직 ranging을 돌려주는지.
+  ///
+  /// 탭 가시성만으로는 부족하다: 앱을 백그라운드로 보내면 탭은 그대로 선택된
+  /// 상태라 `TickerMode`가 바뀌지 않는데 OS는 ranging을 멈춘다. 그러면 마지막
+  /// [BeaconDetected]가 그대로 남아, 방을 나갔다 돌아온 뒤에도 코드가 통과한다
+  /// (리뷰 Critical). 스캐너의 만료 타이머는 "샘플이 끊겼다"를, 이 값은
+  /// "우리가 아예 볼 수 없는 구간에 들어갔다"를 각각 처리한다.
+  ///
+  /// **`inactive`는 여기서 백그라운드로 치지 않는다.** `inactive`는 잠깐
+  /// 포커스를 잃었을 뿐 ranging이 멈추지 않는 상태다 — iOS 제어센터·알림센터·
+  /// 전화 배너, Android 알림 그림자·시스템 다이얼로그가 전부 여기 해당하고,
+  /// **최초 실행의 권한 다이얼로그 자체도** 그렇다. 이걸 백그라운드로 치면
+  /// 그런 순간마다 스캔을 허물고 입력하던 네 자리를 버린 뒤 안정화를 처음부터
+  /// 다시 쌓게 된다(리뷰 Important 2). 만약 그 사이 실제로 샘플이 끊긴다면
+  /// 그건 스캐너의 만료 타이머가 잡는다 — 두 층이 각자 할 일만 한다.
+  bool _appObservable = true;
+
   /// 지금 실제로 화면에 떠 있는(것으로 우리가 추적하는) 상태 기반 팝업과
   /// **그 라우트 객체**.
   ///
@@ -204,6 +224,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.initState();
     _scanner = ref.read(beaconScannerProvider);
     _rootNavigator = Navigator.of(context, rootNavigator: true);
+    WidgetsBinding.instance.addObserver(this);
+    // 옵저버를 등록해도 **현재** 생명주기 상태를 재생해 주지는 않는다. 이미
+    // 백그라운드인 상태에서 마운트되면 `true`로 시작해 백그라운드 스캔을
+    // 시작하고, 뒤늦게 오는 `resumed`는 값이 이미 참이라 전이를 만들지 못한다.
+    // Flutter의 `AppLifecycleListener`도 생성 시 이 값을 스냅샷한다
+    // (리뷰 Important 2 / codex).
+    final current = WidgetsBinding.instance.lifecycleState;
+    if (current != null) _appObservable = _isObservable(current);
+  }
+
+  /// 이 상태에서 OS가 아직 ranging을 돌려주는가.
+  static bool _isObservable(AppLifecycleState state) =>
+      state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (!mounted) return;
+    _appObservable = _isObservable(state);
+    // `setState`로 감싸는 이유: 생명주기 콜백은 위젯 트리를 더럽히지 않아
+    // 프레임이 예약되지 않는다. `_onBecameHidden`이 팝업 정리를
+    // `addPostFrameCallback`으로 미루므로, 프레임이 없으면 그 콜백이 영영
+    // 돌지 않아 낡은 감지로 열린 팝업이 그대로 남는다.
+    // `hidden`/`paused`에서는 `SchedulerBinding`이 프레임을 아예 끄므로
+    // 팝업 정리를 프레임 뒤로 미룰 수 없다 — 여기서는 빌드 단계가 아니니
+    // 곧바로 제거한다. `setState`는 그래도 필요하다(감지 상태 초기화를
+    // 화면에 반영해야 한다).
+    setState(() => _applyVisibility(duringBuild: false));
+  }
+
+  /// 탭 가시성과 앱 관측 가능 여부를 합쳐 실효 가시성을 갱신한다.
+  void _applyVisibility({required bool duringBuild}) {
+    final next = _tabVisible && _appObservable;
+    if (next == _visible) return;
+    _visible = next;
+    if (next) {
+      _onBecameVisible();
+    } else {
+      _onBecameHidden(duringBuild: duringBuild);
+    }
   }
 
   @override
@@ -212,18 +272,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 홈 탭이 보이는지/숨겨졌는지는 InheritedWidget(`_EffectiveTickerMode`)
     // 의존성으로 전달되므로, 그 값이 뒤집히는 순간 이 콜백이 불린다.
     // `TickerMode.of`는 3.35에서 deprecated돼 `valuesOf`를 쓴다.
-    final visible = TickerMode.valuesOf(context).enabled;
-    if (visible == _visible) return;
-    _visible = visible;
-    if (visible) {
-      _onBecameVisible();
-    } else {
-      _onBecameHidden();
-    }
+    _tabVisible = TickerMode.valuesOf(context).enabled;
+    _applyVisibility(duringBuild: true);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // 이 시점 이후에 도착하는 모든 비동기 완료를 무효화한다.
     _bootstrapGeneration++;
     _scanGeneration++;
@@ -242,15 +297,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.dispose();
   }
 
-  /// 홈 탭이 숨겨졌다 — BLE 스캔을 멈추고 이 화면이 띄운 팝업을 전부 닫는다.
-  void _onBecameHidden() {
+  /// 홈 탭이 숨겨졌거나 앱이 관측 불가 상태로 갔다 — BLE 스캔을 멈추고 이
+  /// 화면이 띄운 팝업을 전부 닫는다.
+  ///
+  /// [duringBuild]가 참이면(=`didChangeDependencies` 경로) 내비게이션을 이
+  /// 프레임이 끝난 뒤로 미룬다. 거짓이면(=생명주기 경로) **곧바로** 제거한다 —
+  /// `hidden`/`paused`에서는 `SchedulerBinding`이 프레임을 꺼 버려서, 미뤄 둔
+  /// 콜백이 다음 `resumed`까지 돌지 않기 때문이다.
+  ///
+  /// 추적 상태(`_shownPopup` 등)는 어느 쪽이든 지금 바로 지운다 — 그래야 그
+  /// 사이에 도착하는 이벤트가 "이미 떠 있다"고 오판하지 않는다.
+  void _onBecameHidden({required bool duringBuild}) {
     unawaited(_stopScan());
     _beaconState = const BeaconIdle();
-    // `didChangeDependencies`는 빌드 단계에서 불린다 — 내비게이션은 이
-    // 프레임이 끝난 뒤로 미룬다. 추적 상태(_shownPopup 등)는 지금 바로
-    // 지워야 그 사이에 도착하는 이벤트가 "이미 떠 있다"고 오판하지 않는다.
     final routes = _takeOwnedPopups();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _removeRoutes(routes));
+    if (duringBuild) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _removeRoutes(routes));
+    } else {
+      _removeRoutes(routes);
+    }
   }
 
   /// 홈 탭이 다시 보인다 — 스캔과 클럽 스코프 데이터를 처음부터 다시
