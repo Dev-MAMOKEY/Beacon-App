@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
@@ -12,6 +14,16 @@ class _RecordingProfileRepository implements ProfileRepository {
   _RecordingProfileRepository({this.failure});
 
   final ApiException? failure;
+
+  /// true면 `changePassword`가 [releaseChange]를 부를 때까지 완료되지 않는다.
+  /// 요청이 떠 있는 동안 다시 제출할 수 있는지 보는 데 쓴다.
+  bool gateChange = false;
+  Completer<void>? _gate;
+
+  void releaseChange() {
+    _gate?.complete();
+    _gate = null;
+  }
 
   final List<({String current, String next, String confirm})> calls = [];
 
@@ -33,6 +45,10 @@ class _RecordingProfileRepository implements ProfileRepository {
       next: newPassword,
       confirm: confirmNewPassword,
     ));
+    if (gateChange) {
+      final gate = _gate ??= Completer<void>();
+      await gate.future;
+    }
     final error = failure;
     if (error != null) throw error;
   }
@@ -176,6 +192,54 @@ void main() {
     );
   });
 
+  testWidgets('확인 칸이 비어 있으면 "일치하지 않습니다"가 아니라 "한 번 더" 안내가 붙는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `passwordConfirm(confirm, next)`처럼 인자를
+    // 뒤바꿔 넘긴다. 두 값이 모두 채워져 있으면 결과가 같아서 드러나지
+    // 않고, **확인 칸이 빈 경우에만** 문구가 갈린다 — 뒤바꾸면 빈 값이
+    // password 자리로 가서 "비밀번호가 일치하지 않습니다"가 나온다.
+    final harness = await _pumpPopup(tester);
+
+    await _fill(tester, current: 'old-pass1', next: 'new-pass1', confirm: '');
+    await tester.tap(find.text('변경하기'));
+    await tester.pumpAndSettle();
+
+    expect(harness.repository.calls, isEmpty);
+    expect(
+      find.descendant(
+        of: _fieldOf(passwordChangeConfirmFieldKey),
+        matching: find.text(AuthFormValidator.passwordConfirm('new-pass1', '')!),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('비밀번호가 일치하지 않습니다'), findsNothing);
+  });
+
+  testWidgets('요청이 떠 있는 동안 다시 눌러도 두 번 제출되지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `if (_submitting) return;`을 지운다. 버튼이
+    // 로딩 상태로 바뀌는 것은 다음 리빌드에서야 일어나므로 그 사이에 두
+    // 번째 탭이 끼어들 수 있고, 비밀번호 변경이 두 번 나가면 서버가 두
+    // 번째 요청을 "현재 비밀번호 불일치"로 거절한다(이미 바뀌었으니까).
+    final repository = _RecordingProfileRepository()..gateChange = true;
+    await _pumpPopup(tester, repository: repository);
+
+    await _fill(tester, current: 'old-pass1', next: 'new-pass1', confirm: 'new-pass1');
+    // 리빌드 **전에** 두 번 두드린다. 한 번 pump하면 버튼이 로딩 상태로
+    // 바뀌어 두 번째 탭 대상이 사라지므로, 그 상태로는 위젯 층의 방어만
+    // 확인할 뿐 코드 레벨 가드는 건드리지도 못한다.
+    await tester.tap(find.text('변경하기'));
+    await tester.tap(find.text('변경하기'));
+    await tester.pump();
+
+    expect(
+      repository.calls,
+      hasLength(1),
+      reason: '버튼이 로딩 상태로 바뀌기 전에 두 번째 탭이 끼어들 수 있다',
+    );
+
+    repository.releaseChange();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('현재 비밀번호가 비어 있으면 그 칸 아래에 안내가 붙는다', (tester) async {
     // 잡아야 할 잘못된 구현: 현재 비밀번호에 `AuthFormValidator.password`를
     // 그대로 적용한다 — 규칙이 생기기 전에 만든 계정(6자짜리 등)의 주인이
@@ -267,6 +331,64 @@ void main() {
         matching: find.text('현재 비밀번호가 올바르지 않습니다'),
       ),
       findsNothing,
+    );
+    // 토스트로 띄우면 팝업 스크림 아래에 깔려 사용자가 못 본다 — 코드 주석이
+    // 피하려던 상황이 정확히 그것인데, `find.text`만으로는 인라인과 토스트를
+    // 구별하지 못한다.
+    expect(find.byType(SnackBar), findsNothing, reason: '팝업 안 폼 메시지지 토스트가 아니다');
+  });
+
+  // 아래 두 테스트는 짝이다. 분기를 `error.code`가 아니라
+  // `error.statusCode == 400`으로 잘못 구현해도 기존 픽스처(400 +
+  // INVALID_CREDENTIALS / 네트워크)로는 두 분기가 일치해 스위트가 전부
+  // 초록이었다(리뷰 Important 1). 상태 코드와 에러 코드를 어긋나게 놓아
+  // 어느 쪽으로 가르는지 드러낸다.
+  testWidgets('401로 와도 INVALID_CREDENTIALS면 현재 비밀번호 칸 아래 인라인이다', (tester) async {
+    final repository = _RecordingProfileRepository(
+      failure: const ApiException(
+        ErrorCode.invalidCredentials,
+        '학번 또는 비밀번호가 올바르지 않습니다',
+        statusCode: 401,
+      ),
+    );
+    await _pumpPopup(tester, repository: repository);
+
+    await _fill(tester, current: 'wrong-pass1', next: 'new-pass1', confirm: 'new-pass1');
+    await tester.tap(find.text('변경하기'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: _fieldOf(passwordChangeCurrentFieldKey),
+        matching: find.text('현재 비밀번호가 올바르지 않습니다'),
+      ),
+      findsOneWidget,
+      reason: '상태 코드가 아니라 에러 코드로 갈라야 한다',
+    );
+  });
+
+  testWidgets('400으로 와도 INVALID_CREDENTIALS가 아니면 폼 메시지다', (tester) async {
+    final repository = _RecordingProfileRepository(
+      failure: const ApiException(
+        ErrorCode.unknown,
+        '요청 형식이 올바르지 않습니다.',
+        statusCode: 400,
+      ),
+    );
+    await _pumpPopup(tester, repository: repository);
+
+    await _fill(tester, current: 'old-pass1', next: 'new-pass1', confirm: 'new-pass1');
+    await tester.tap(find.text('변경하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('요청 형식이 올바르지 않습니다.'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: _fieldOf(passwordChangeCurrentFieldKey),
+        matching: find.text('현재 비밀번호가 올바르지 않습니다'),
+      ),
+      findsNothing,
+      reason: '400이라는 이유만으로 현재 비밀번호를 탓하면 안 된다',
     );
   });
 

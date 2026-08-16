@@ -519,6 +519,34 @@ void main() {
       expect(repository.fetchMeCalls, fetchMeCallsBefore, reason: '서버를 다시 두드리지 않는다');
     });
 
+    test('직함이 있는 프로필도 이름·알림만 바꾸고 직함은 지키지 않는다면 잃는다', () async {
+      // 잡아야 할 잘못된 구현: `copyWith`가 `title: null`을 그대로 대입한다.
+      // 오늘은 `title`을 읽는 화면이 없어 무해해 보이지만, 직함 기능이
+      // 들어오는 순간 알림 토글 한 번이 서버에 있는 직함을 로컬에서 지운다.
+      // 픽스처에 `title`이 없으면 이 오배선을 아무도 못 본다.
+      const withTitle = MemberProfile(
+        name: '김민준',
+        stdId: '20250101',
+        clubIds: [7],
+        pushEnabled: true,
+        title: '부장',
+      );
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(profile: withTitle),
+        store: store,
+      );
+
+      await container.read(sessionControllerProvider.future);
+      container.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: false);
+
+      final profile =
+          (container.read(sessionControllerProvider).value! as SessionReady).profile;
+      expect(profile.pushEnabled, isFalse);
+      expect(profile.title, '부장', reason: '이 화면이 건드리지 않는 필드는 살아 있어야 한다');
+    });
+
     test('인자를 준 필드만 바뀐다', () async {
       // 잡아야 할 잘못된 구현: null을 그대로 대입해(`name: name`) 이름을
       // 지운다 — 토글만 바꿨는데 이름이 빈 문자열이 된다.

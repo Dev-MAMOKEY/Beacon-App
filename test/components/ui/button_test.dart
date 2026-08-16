@@ -83,4 +83,38 @@ void main() {
     await tester.pump();
     expect(taps, 2);
   });
+
+  // #13이 추가한 variant인데 테스트가 하나도 없었다 — `gray1`을 `main`으로
+  // 바꿔도 스위트 전체가 초록이었다(리뷰 Important 6). 팝업의 취소 버튼이
+  // 실행 버튼과 같은 색이 되면 사용자가 되돌릴 수 없는 쪽을 눌러 버린다.
+  testWidgets('cancel은 gray1을 배경으로 쓰고 primary와 구별된다', (tester) async {
+    await tester.pumpWidget(
+      _host(AppButton(label: '취소', variant: ButtonVariant.cancel, onPressed: () {})),
+    );
+    await tester.pump();
+
+    final colors = buildAppTheme().extension<AppColors>()!;
+    expect(_backgroundOf(tester), colors.gray1);
+    expect(
+      _backgroundOf(tester),
+      isNot(colors.main),
+      reason: '취소가 실행 버튼과 같은 색이면 안 된다',
+    );
+  });
+
+  testWidgets('trailing을 주면 라벨 뒤에 함께 그린다', (tester) async {
+    await tester.pumpWidget(
+      _host(
+        AppButton(
+          label: '로그아웃',
+          trailing: const Icon(Icons.chevron_right, key: ValueKey('trailing')),
+          onPressed: () {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('trailing')), findsOneWidget);
+    expect(find.text('로그아웃'), findsOneWidget);
+  });
 }

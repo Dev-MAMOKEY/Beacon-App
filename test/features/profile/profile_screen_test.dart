@@ -474,6 +474,45 @@ void main() {
     expect(find.byType(PasswordChangePopupContent), findsNothing);
   });
 
+  testWidgets('팝업 위에 다른 루트 라우트가 있어도 자기 팝업만 닫는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `_rootNavigator.removeRoute(route)` 대신
+    // `pop()`을 쓴다. pop은 "스택 맨 위"를 닫을 뿐 정체성을 모르므로,
+    // 우리 팝업 위에 다른 루트 라우트가 얹혀 있으면 **엉뚱한 것을 닫고**
+    // 우리 팝업은 다음 탭 위에 그대로 남는다. 파일 주석이 바로 이 이유로
+    // 라우트 객체를 들고 있다고 적어 두었는데 아무 테스트도 없었다.
+    final harness = await _pumpProfile(tester);
+
+    await tester.tap(find.text('3개월에 한번씩 비밀번호 변경이 가능해요'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PasswordChangePopupContent), findsOneWidget);
+
+    // 팝업 위로 다른 루트 라우트를 하나 얹는다. 불투명 라우트를 쓰면
+    // `Overlay`가 그 아래 전부를 `TickerMode(enabled: false)`로 만들어
+    // 화면이 스스로 팝업을 닫아버리므로, 반드시 비불투명이어야 한다.
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator).last);
+    unawaited(
+      navigator.push<void>(
+        DialogRoute<void>(
+          context: navigator.context,
+          barrierColor: null,
+          builder: (context) => const Text('위에 얹힌 라우트'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('위에 얹힌 라우트'), findsOneWidget);
+
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PasswordChangePopupContent), findsNothing, reason: '자기 팝업은 닫아야 한다');
+    expect(
+      find.text('위에 얹힌 라우트'),
+      findsOneWidget,
+      reason: '남의 라우트를 닫으면 안 된다 — pop()은 정체성을 모른다',
+    );
+  });
+
   testWidgets('숨겨진 마이 탭은 토글 실패 토스트를 띄우지 않는다', (tester) async {
     // 잡아야 할 잘못된 구현: 실패하면 `_visible`을 보지 않고 그냥 토스트를
     // 띄운다. `StatefulShellRoute.indexedStack`은 숨은 브랜치를 dispose하지

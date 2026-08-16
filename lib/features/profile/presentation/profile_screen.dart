@@ -114,6 +114,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   void _openPopup(WidgetBuilder builder) {
     // 두 팝업이 겹쳐 쌓이는 일은 없어야 한다.
+    //
+    // 다만 이 줄은 **오늘 도달할 수 없는 경로에 대한 방어**다 — 팝업이 떠
+    // 있는 동안 스크림이 화면 전체를 덮어 다음 팝업을 열 버튼을 누를 수
+    // 없고, 탭을 옮기면 [didChangeDependencies]가 먼저 닫는다. 그래서 이
+    // 줄을 지워도 스위트가 초록으로 남는다(리뷰 Minor 7). 테스트로 고정하려면
+    // 이 State에 테스트 전용 진입점을 뚫어야 하는데, 도달 불가능한 경로를
+    // 위해 프로덕션에 발판을 남기는 값이 그만큼은 아니라고 판단했다.
+    // 계약을 표명하는 의미로 둔다.
     _closePopup();
     final route = buildAppPopupRoute<void>(
       context: context,
