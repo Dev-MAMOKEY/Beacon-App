@@ -3,7 +3,11 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
 
-enum ButtonVariant { primary, destructive, ghost }
+/// [cancel]은 Figma 버튼 컴포넌트(`353:1903` "버튼 모음")의 `취소버튼`
+/// variant(`353:1901`)다 — 배경 `gray1`, 글자 `white`. 팝업의 취소/변경
+/// 2단 버튼(`353:1907`·`353:1685`)이 쓴다. [ghost](투명 배경 + `gray3`
+/// 글자)와는 다른 것이라 재사용할 수 없다.
+enum ButtonVariant { primary, destructive, ghost, cancel }
 
 enum ButtonSize { md, lg }
 
@@ -30,6 +34,7 @@ class AppButton extends StatelessWidget {
     this.variant = ButtonVariant.primary,
     this.size = ButtonSize.lg,
     this.isLoading = false,
+    this.trailing,
   });
 
   const AppButton.destructive({
@@ -38,6 +43,7 @@ class AppButton extends StatelessWidget {
     this.onPressed,
     this.size = ButtonSize.lg,
     this.isLoading = false,
+    this.trailing,
   }) : variant = ButtonVariant.destructive;
 
   const AppButton.ghost({
@@ -46,7 +52,17 @@ class AppButton extends StatelessWidget {
     this.onPressed,
     this.size = ButtonSize.lg,
     this.isLoading = false,
+    this.trailing,
   }) : variant = ButtonVariant.ghost;
+
+  const AppButton.cancel({
+    super.key,
+    required this.label,
+    this.onPressed,
+    this.size = ButtonSize.lg,
+    this.isLoading = false,
+    this.trailing,
+  }) : variant = ButtonVariant.cancel;
 
   static const double radius = 12;
 
@@ -55,6 +71,12 @@ class AppButton extends StatelessWidget {
   final ButtonVariant variant;
   final ButtonSize size;
   final bool isLoading;
+
+  /// 라벨 오른쪽에 6 간격으로 붙는 장식. Figma 버튼 컴포넌트 `317:1419`
+  /// ("속성 1=버튼")는 라벨 뒤에 셰브론을 달고 있다 — 마이페이지의 로그아웃
+  /// 버튼(`353:1730`)이 그 variant다. 장식일 뿐이라 [Semantics]에서는
+  /// 제외된다(버튼의 접근성 라벨은 [label] 하나다).
+  final Widget? trailing;
 
   bool get _isEnabled => onPressed != null && !isLoading;
 
@@ -102,13 +124,21 @@ class AppButton extends StatelessWidget {
                       valueColor: AlwaysStoppedAnimation<Color>(style.foreground),
                     ),
                   )
-                : Text(
-                    label,
-                    style: style.textStyle.copyWith(color: style.foreground),
-                  ),
+                : _buildLabel(style),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildLabel(AppButtonStyle style) {
+    final text = Text(label, style: style.textStyle.copyWith(color: style.foreground));
+    final trailing = this.trailing;
+    if (trailing == null) return text;
+    // Figma `317:1419` 실측 — 라벨과 셰브론 사이 6.
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [text, const SizedBox(width: 6), trailing],
     );
   }
 }
@@ -128,6 +158,7 @@ AppButtonStyle resolveButtonStyle(
     ButtonVariant.primary => (background: colors.main, foreground: colors.white),
     ButtonVariant.destructive => (background: colors.red, foreground: colors.white),
     ButtonVariant.ghost => (background: Colors.transparent, foreground: colors.gray3),
+    ButtonVariant.cancel => (background: colors.gray1, foreground: colors.white),
   };
 
   final ({double height, TextStyle textStyle}) metrics = switch (size) {

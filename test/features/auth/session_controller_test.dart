@@ -489,6 +489,118 @@ void main() {
     expect((state as SessionReady).clubId, 7);
   });
 
+  group('applyProfileChange — 서버 왕복 없이 로컬 프로필만 갱신한다', () {
+    test('SessionReady의 이름과 알림 값을 갈아끼우고 나머지는 그대로 둔다', () async {
+      // 잡아야 할 잘못된 구현: `refreshProfile()`을 부른다 — `GET
+      // /members/me`가 실패하면 세션이 SessionUnavailable로 떨어져
+      // 라우터가 사용자를 스플래시로 튕겨낸다(알림 토글 한 번에!).
+      // fetchMe 호출 수가 늘어나지 않는 것으로 그걸 잡는다.
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final repository = FakeAuthRepository(profile: _profileWithClub);
+      final container = _container(repository: repository, store: store);
+
+      await container.read(sessionControllerProvider.future);
+      final fetchMeCallsBefore = repository.fetchMeCalls;
+
+      container
+          .read(sessionControllerProvider.notifier)
+          .applyProfileChange(name: '박서준', pushEnabled: false);
+
+      final state = container.read(sessionControllerProvider).value;
+      expect(state, isA<SessionReady>());
+      final profile = (state! as SessionReady).profile;
+      expect(profile.name, '박서준');
+      expect(profile.pushEnabled, isFalse);
+      // 이 화면이 바꿀 수 없는 것들은 그대로여야 한다 — copyWith 오배선
+      // (`stdId: name ?? this.stdId`)을 잡는다.
+      expect(profile.stdId, _profileWithClub.stdId);
+      expect(profile.clubIds, _profileWithClub.clubIds);
+      expect(repository.fetchMeCalls, fetchMeCallsBefore, reason: '서버를 다시 두드리지 않는다');
+    });
+
+    test('직함이 있는 프로필도 이름·알림만 바꾸고 직함은 지키지 않는다면 잃는다', () async {
+      // 잡아야 할 잘못된 구현: `copyWith`가 `title: null`을 그대로 대입한다.
+      // 오늘은 `title`을 읽는 화면이 없어 무해해 보이지만, 직함 기능이
+      // 들어오는 순간 알림 토글 한 번이 서버에 있는 직함을 로컬에서 지운다.
+      // 픽스처에 `title`이 없으면 이 오배선을 아무도 못 본다.
+      const withTitle = MemberProfile(
+        name: '김민준',
+        stdId: '20250101',
+        clubIds: [7],
+        pushEnabled: true,
+        title: '부장',
+      );
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(profile: withTitle),
+        store: store,
+      );
+
+      await container.read(sessionControllerProvider.future);
+      container.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: false);
+
+      final profile =
+          (container.read(sessionControllerProvider).value! as SessionReady).profile;
+      expect(profile.pushEnabled, isFalse);
+      expect(profile.title, '부장', reason: '이 화면이 건드리지 않는 필드는 살아 있어야 한다');
+    });
+
+    test('인자를 준 필드만 바뀐다', () async {
+      // 잡아야 할 잘못된 구현: null을 그대로 대입해(`name: name`) 이름을
+      // 지운다 — 토글만 바꿨는데 이름이 빈 문자열이 된다.
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(profile: _profileWithClub),
+        store: store,
+      );
+      await container.read(sessionControllerProvider.future);
+
+      container.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: false);
+
+      final profile = (container.read(sessionControllerProvider).value! as SessionReady).profile;
+      expect(profile.name, _profileWithClub.name);
+      expect(profile.pushEnabled, isFalse);
+    });
+
+    test('로그아웃된 세션은 되살아나지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 상태를 보지 않고 무조건 프로필을 만들어
+      // 넣는다 — 로그아웃이 먼저 반영된 뒤 도착한 수정 결과가 죽은 세션을
+      // 되살려, 라우터가 사용자를 다시 앱 안으로 들여보낸다.
+      final container = _container(
+        repository: FakeAuthRepository(),
+        store: InMemoryTokenStore(),
+      );
+
+      final initial = await container.read(sessionControllerProvider.future);
+      expect(initial, isA<SessionSignedOut>());
+
+      container.read(sessionControllerProvider.notifier).applyProfileChange(name: '박서준');
+
+      expect(container.read(sessionControllerProvider).value, isA<SessionSignedOut>());
+    });
+
+    test('NeedsClub 상태에서도 프로필만 갈아끼운다', () async {
+      // 잡아야 할 잘못된 구현: SessionReady만 처리하고 나머지를 무시한다 —
+      // 초대코드 화면에 머무는 동안의 프로필 수정이 조용히 사라진다.
+      final store = InMemoryTokenStore();
+      await store.save(accessToken: 'a', refreshToken: 'r');
+      final container = _container(
+        repository: FakeAuthRepository(profile: _profileNoClub),
+        store: store,
+      );
+      await container.read(sessionControllerProvider.future);
+
+      container.read(sessionControllerProvider.notifier).applyProfileChange(name: '박서준');
+
+      final state = container.read(sessionControllerProvider).value;
+      expect(state, isA<SessionNeedsClub>());
+      expect((state! as SessionNeedsClub).profile.name, '박서준');
+    });
+  });
+
   group('signOut의 부분 실패', () {
     test('서버 로그아웃이 실패해도 로컬 세션은 정리된다', () async {
       final store = InMemoryTokenStore();

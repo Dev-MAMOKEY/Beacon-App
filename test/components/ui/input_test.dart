@@ -68,4 +68,55 @@ void main() {
       expect(find.byIcon(Icons.visibility_off_outlined), findsNothing);
     });
   });
+
+  // #13이 추가한 `prefix`인데 테스트가 하나도 없었다 — `prefixIcon`을 통째로
+  // null로 만들어도 스위트 전체가 초록이었다(리뷰 Important 6).
+  group('prefix', () {
+    testWidgets('prefix를 주면 앞 아이콘으로 그린다', (tester) async {
+      await tester.pumpWidget(
+        _host(
+          AppInput(
+            controller: TextEditingController(),
+            hint: '비밀번호 입력',
+            prefix: const Icon(Icons.lock_outline, key: ValueKey('prefix')),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('prefix')), findsOneWidget);
+      expect(tester.widget<TextField>(find.byType(TextField)).decoration!.prefixIcon, isNotNull);
+    });
+
+    // `contentPadding`의 left는 prefix 유무로 갈린다(prefix가 있으면 그
+    // Padding이 이미 왼쪽 여백을 만든다). 이 분기는 Phase 1의 **모든** 입력
+    // 칸에 영향을 주는데 어느 층에도 테스트가 없었다 — 스위트 통과는
+    // "트리가 여전히 빌드된다"는 뜻이지 로그인·회원가입이 그대로 보인다는
+    // 뜻이 아니다.
+    testWidgets('prefix가 없으면 왼쪽 여백을 직접 주고, 있으면 주지 않는다', (tester) async {
+      await tester.pumpWidget(_host(AppInput(controller: TextEditingController(), hint: '학번 입력')));
+      await tester.pump();
+      final without =
+          tester.widget<TextField>(find.byType(TextField)).decoration!.contentPadding!
+              as EdgeInsets;
+      expect(without.left, 16);
+      expect(without.right, 16);
+
+      await tester.pumpWidget(
+        _host(
+          AppInput(
+            controller: TextEditingController(),
+            hint: '학번 입력',
+            prefix: const Icon(Icons.person_outline),
+          ),
+        ),
+      );
+      await tester.pump();
+      final with_ =
+          tester.widget<TextField>(find.byType(TextField)).decoration!.contentPadding!
+              as EdgeInsets;
+      expect(with_.left, 0, reason: 'prefix의 Padding이 이미 만든 여백을 두 번 주면 안 된다');
+      expect(with_.right, 16);
+    });
+  });
 }

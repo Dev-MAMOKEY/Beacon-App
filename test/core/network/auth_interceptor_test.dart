@@ -259,6 +259,118 @@ void main() {
     expect(adapter.callsTo('POST', '/auth/refresh'), 1);
   });
 
+  group('401 + INVALID_CREDENTIALS', () {
+    // 사용자가 방금 입력해 보낸 자격이 틀린 것이지 액세스 토큰이 만료된 게
+    // 아니다. 갱신을 시도하면 회전을 헛되이 태우고, 틀린 비밀번호를 서버에
+    // 두 번 보내며(잠금·레이트리밋 카운터), 그 갱신이 거부되면 토큰을 지워
+    // **비밀번호를 잘못 입력한 것만으로 로그아웃**시킨다.
+    void arrangeWrongPassword() {
+      adapter.on(
+        'PATCH',
+        '/members/me/password',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'INVALID_CREDENTIALS', 'message': '현재 비밀번호가 올바르지 않습니다.'},
+        },
+      );
+    }
+
+    test('재발급을 시도하지 않고 요청도 한 번만 나간다', () async {
+      // 잡아야 할 잘못된 구현: 401이면 코드를 보지 않고 갱신부터 한다.
+      arrangeWrongPassword();
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 200,
+        body: (_) => {
+          'success': true,
+          'data': {'accessToken': 'new-access', 'refreshToken': 'refresh-2'},
+        },
+      );
+
+      await expectLater(
+        dio.patch<Object?>('/members/me/password', data: const {'x': 1}),
+        throwsA(isA<DioException>()),
+      );
+
+      expect(adapter.callsTo('POST', '/auth/refresh'), 0, reason: '회전을 태울 이유가 없다');
+      expect(
+        adapter.callsTo('PATCH', '/members/me/password'),
+        1,
+        reason: '틀린 비밀번호를 서버에 두 번 보내면 잠금 카운터가 두 번 올라간다',
+      );
+      expect(await store.readAccessToken(), 'old-access');
+      expect(await store.readRefreshToken(), 'refresh-1');
+      expect(expiredCallbackCount, 0);
+    });
+
+    test('재발급이 거부당하는 상황에서도 로그아웃되지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 갱신을 시도하고, 그 갱신이 인증 실패로
+      // 돌아오면 토큰을 지운다 — 현재 비밀번호 오타 한 번이 세션을 날린다.
+      arrangeWrongPassword();
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'REFRESH_TOKEN_REVOKED', 'message': '무효화됨'},
+        },
+      );
+
+      await expectLater(
+        dio.patch<Object?>('/members/me/password', data: const {'x': 1}),
+        throwsA(isA<DioException>()),
+      );
+
+      expect(expiredCallbackCount, 0, reason: '비밀번호 오타로 세션이 만료되면 안 된다');
+      expect(await store.readAccessToken(), 'old-access');
+      expect(await store.readRefreshToken(), 'refresh-1');
+    });
+
+    test('같은 엔드포인트라도 TOKEN_EXPIRED면 정상적으로 재발급한다', () async {
+      // 잡아야 할 잘못된 구현: 경로를 통째로 면제한다(`_isAuthEndpoint`에
+      // 추가하는 식) — 그러면 이 화면에서 액세스 토큰이 **진짜로** 만료됐을
+      // 때 갱신이 일어나지 않아 사용자가 헛된 오류를 본다.
+      adapter.on(
+        'POST',
+        '/auth/refresh',
+        statusCode: 200,
+        body: (_) => {
+          'success': true,
+          'data': {'accessToken': 'new-access', 'refreshToken': 'refresh-2'},
+        },
+      );
+      adapter.on(
+        'PATCH',
+        '/members/me/password',
+        when: (o) => o.headers['Authorization'] == 'Bearer old-access',
+        statusCode: 401,
+        body: (_) => {
+          'success': false,
+          'data': null,
+          'error': {'code': 'TOKEN_EXPIRED', 'message': '만료'},
+        },
+      );
+      adapter.on(
+        'PATCH',
+        '/members/me/password',
+        when: (o) => o.headers['Authorization'] == 'Bearer new-access',
+        statusCode: 200,
+        body: (_) => {'success': true, 'data': null},
+      );
+
+      final response = await dio.patch<Object?>('/members/me/password', data: const {'x': 1});
+
+      expect((response.data! as Map)['success'], true);
+      expect(adapter.callsTo('POST', '/auth/refresh'), 1);
+      expect(await store.readAccessToken(), 'new-access');
+    });
+  });
+
   test('재발급이 실패하면 토큰을 지우고 만료 콜백을 부른다', () async {
     adapter.on(
       'POST',

@@ -199,6 +199,39 @@ class SessionController extends AsyncNotifier<SessionState> {
     _publish(generation, result);
   }
 
+  /// 이 기기에서 **서버가 이미 200으로 확정한** 프로필 수정을 세션 상태에
+  /// 반영한다. 네트워크를 타지 않는다.
+  ///
+  /// [refreshProfile]을 쓰지 않는 이유: 그건 `GET /members/me`를 다시 타고,
+  /// 그 조회가 실패하면 세션을 [SessionUnavailable]로 떨어뜨린다 —
+  /// `computeRedirect`가 그 상태를 스플래시(재시도 화면)로 보내므로, 알림
+  /// 토글 한 번이나 이름 한 줄 수정이 그 직후 네트워크가 잠깐 흔들렸다는
+  /// 이유만으로 사용자를 화면 밖으로 튕겨낸다. 초대코드 가입처럼 "새로
+  /// 조회해야만 알 수 있는 것"(clubIds)이 걸린 경우가 아니면 이쪽을 쓴다.
+  ///
+  /// 세대(`_tokens.generation`)를 보지 않는 대신 **현재 상태**를 본다.
+  /// [SessionSignedOut]/[SessionUnavailable]에는 갈아끼울 프로필 자체가
+  /// 없으므로 아무것도 하지 않는다 — 로그아웃이 먼저 반영된 뒤에 도착한
+  /// 수정 결과가 죽은 세션을 되살리는 일을 여기서 막는다.
+  void applyProfileChange({String? name, bool? pushEnabled}) {
+    final current = state.value;
+    if (current == null) return;
+
+    // 봉인된 SessionState 위의 exhaustive switch — 프로필을 든 상태가
+    // 하나 더 생기면 컴파일 타임에 누락을 알려준다.
+    final SessionState? next = switch (current) {
+      SessionReady(:final profile) =>
+        SessionReady(profile.copyWith(name: name, pushEnabled: pushEnabled)),
+      SessionNeedsClub(:final profile) =>
+        SessionNeedsClub(profile.copyWith(name: name, pushEnabled: pushEnabled)),
+      SessionSignedOut() => null,
+      SessionUnavailable() => null,
+    };
+    if (next == null) return;
+
+    state = AsyncValue.data(next);
+  }
+
   Future<void> signOut() async {
     final generation = _tokens.beginOperation();
     try {
