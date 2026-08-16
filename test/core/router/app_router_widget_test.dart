@@ -16,6 +16,8 @@ import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
+import 'package:beacon_app/features/profile/presentation/password_change_popup.dart';
+import 'package:beacon_app/features/profile/presentation/profile_screen.dart';
 import 'package:beacon_app/features/records/data/records_dto.dart';
 import 'package:beacon_app/features/records/data/records_repository.dart';
 import 'package:beacon_app/features/records/presentation/records_calendar.dart';
@@ -576,6 +578,57 @@ void main() {
     expect(find.byType(RecordsScreen), findsNothing);
   });
 
+  // ---------------------------------------------------------------------
+  // 마이 탭도 팝업을 띄운다(#13) — 홈의 팝업 3종·기록의 시트와 같은 두
+  // 함정 위에 있다. 얇은 하네스(`profile_screen_test.dart`)는 `AppShell`
+  // 자체가 없어 "스크림이 하단 탭 바를 덮는가"를 볼 수 없다.
+  // ---------------------------------------------------------------------
+  testWidgets('마이페이지 팝업의 스크림도 하단 탭 셸을 덮어 탭이 눌리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `appPopupNavigatorOf`(루트) 대신
+    // `Navigator.of(context)`(셸 브랜치 안의 중첩 내비게이터)에 팝업을
+    // 붙인다. 그러면 스크림이 브랜치 안에서만 그려져 상단 바와 하단 탭
+    // 바가 그대로 보이고 눌린다.
+    await _pumpRealRouter(tester, clubIds: const [7]);
+
+    await tester.tap(find.text('마이'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ProfileScreen), findsOneWidget);
+
+    await tester.tap(find.text('3개월에 한번씩 비밀번호 변경이 가능해요'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PasswordChangePopupContent), findsOneWidget);
+
+    // 하단 탭 바의 "홈"을 눌러본다. 스크림이 탭 바를 덮고 있다면 이 탭은
+    // 모달 배리어에 흡수돼 아무 효과가 없어야 한다.
+    await tester.tap(find.text('홈'), warnIfMissed: false);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ProfileScreen), findsOneWidget, reason: '탭이 닿았다면 홈으로 넘어갔을 것이다');
+    expect(find.byType(HomeScreen), findsNothing);
+    expect(find.byType(PasswordChangePopupContent), findsOneWidget);
+  });
+
+  testWidgets('마이페이지 팝업이 떠 있는 채로 탭을 옮기면 팝업도 함께 닫힌다', (tester) async {
+    // 잡아야 할 잘못된 구현: 팝업 정리를 `dispose()`에만 둔다 — 탭 전환은
+    // dispose를 부르지 않으므로 루트 내비게이터에 붙은 팝업이 홈 화면 위에
+    // 그대로 남아 앱을 막는다.
+    final (:router, container: _) = await _pumpRealRouter(tester, clubIds: const [7]);
+
+    await tester.tap(find.text('마이'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('3개월에 한번씩 비밀번호 변경이 가능해요'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PasswordChangePopupContent), findsOneWidget);
+
+    // 스크림이 탭 바를 덮고 있어 탭으로는 이동할 수 없다(위 테스트가
+    // 고정한다) — 라우터로 직접 이동한다.
+    router.go(AppRoutes.home);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PasswordChangePopupContent), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
+  });
+
   // Figma 실측(339:1498/326:1569 "상단 메뉴")에서 드러난 사실 — 홈 탭의
   // 상단 바는 고정 문구 "홈"이 아니라 로그인한 멤버의 이름을 보여준다.
   testWidgets('홈 탭의 상단 바는 고정 문구 대신 멤버 이름을 보여준다', (tester) async {
@@ -636,10 +689,15 @@ void main() {
 
     router.go(AppRoutes.profile);
     await tester.pumpAndSettle();
-    expect(find.text('마이페이지는 #13에서 구현합니다'), findsOneWidget);
+    expect(find.byType(ProfileScreen), findsOneWidget);
   });
 
-  testWidgets('탭을 전환했다 돌아오면 이전 탭의 스크롤 위치와 네비게이션 스택이 보존된다', (tester) async {
+  // #13 이전에는 이 테스트가 `/profile/password`로 한 단계 더 들어가
+  // "브랜치 안의 네비게이션 스택"까지 함께 확인했다. 그 경로는 Figma에
+  // 대응하는 화면이 없어(비밀번호 변경은 342폭 팝업이다) 삭제됐고, 지금
+  // 셸에는 하위 라우트가 하나도 없다 — 남은 검증 대상은 `IndexedStack`이
+  // 각 브랜치의 State(따라서 스크롤 위치)를 살려 두는지다.
+  testWidgets('탭을 전환했다 돌아오면 이전 탭의 스크롤 위치가 보존된다', (tester) async {
     final (:router, container: _) = await _pumpRealRouter(tester, clubIds: const [7]);
 
     // 기록 탭의 본문을 스크롤해 둔다. 예전에는 이 자리가 항목 30개짜리
@@ -653,36 +711,22 @@ void main() {
     final scrolledOffset = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
     expect(scrolledOffset, greaterThan(0));
 
-    // 마이 탭으로 이동한 뒤, 그 안에서 비밀번호 변경 화면까지 한 단계 더
-    // 들어간다 — 마이 탭의 네비게이션 스택이 [마이페이지, 비밀번호 변경]
-    // 두 단계가 된다.
+    // 마이 탭으로 전환했다가...
     await tester.tap(find.text('마이'));
     await tester.pumpAndSettle();
-    expect(find.text('마이페이지는 #13에서 구현합니다'), findsOneWidget);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    // 상단 바 제목도 현재 위치(=/profile)를 따라가야 한다.
+    expect(
+      find.descendant(of: find.byType(AppTopBar), matching: find.text('마이페이지')),
+      findsOneWidget,
+    );
 
-    router.push(AppRoutes.passwordChange);
-    await tester.pumpAndSettle();
-    expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
-    // 상단 바 제목도 현재 위치(=/profile/password)를 따라가야 한다.
-    // navigationShell.currentIndex는 브랜치 전환 때만 바뀌므로(같은 마이
-    // 브랜치 안에서 한 단계 더 들어간 것뿐이라 3 그대로), 제목을
-    // currentIndex로 뽑으면 이 화면에서도 "마이페이지"가 그대로 남는다.
-    expect(find.text('비밀번호 변경'), findsOneWidget);
-    expect(find.text('마이페이지'), findsNothing);
-
-    // 홈 탭으로 전환했다가...
+    // ...홈 탭으로 전환했다가...
     await tester.tap(find.text('홈'));
     await tester.pumpAndSettle();
     expect(find.byType(HomeScreen), findsOneWidget);
 
-    // ...다시 마이 탭으로 돌아오면, 루트(마이페이지)가 아니라 방금
-    // 들어갔던 비밀번호 변경 화면이 그대로 남아있어야 한다.
-    await tester.tap(find.text('마이'));
-    await tester.pumpAndSettle();
-    expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
-    expect(find.text('마이페이지는 #13에서 구현합니다'), findsNothing);
-
-    // ...그리고 기록 탭으로 돌아오면 스크롤 위치도 그대로 보존돼 있어야
+    // ...그리고 기록 탭으로 돌아오면 스크롤 위치가 그대로 보존돼 있어야
     // 한다. `IndexedStack` 대신 탭마다 매번 새로 빌드하면 스크롤 가능한
     // 위젯의 State(따라서 스크롤 위치)가 사라지고 0으로 다시 시작한다.
     await tester.tap(find.text('기록'));
@@ -697,11 +741,18 @@ void main() {
   testWidgets('제목은 쿼리 문자열이 붙어도 정확히 표시된다', (tester) async {
     final (:router, container: _) = await _pumpRealRouter(tester, clubIds: const [7]);
 
-    router.go('${AppRoutes.passwordChange}?source=notification');
+    router.go('${AppRoutes.records}?source=notification');
     await tester.pumpAndSettle();
 
-    expect(find.text('비밀번호 변경은 #13에서 구현합니다'), findsOneWidget);
-    expect(find.text('비밀번호 변경'), findsOneWidget);
+    expect(find.byType(RecordsScreen), findsOneWidget);
+    // `.toString()`이면 '/records?source=notification'이 되어 _titleFor의
+    // 정확 일치 switch가 아무 case에도 걸리지 않고 제목이 빈 문자열이 된다.
+    // 하단 탭 라벨('기록')은 AppBottomNav가 항상 그리므로 상단 바 안에서만
+    // 찾는다.
+    expect(
+      find.descendant(of: find.byType(AppTopBar), matching: find.text('기록')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('showAdmin: false 상태에서 /admin으로 이동하면 /home으로 차단된다', (tester) async {
