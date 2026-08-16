@@ -26,13 +26,29 @@ void main() {
   });
 
   test('toKst가 돌려준 값의 벽시계 필드가 KST다', () {
-    // 잡아야 할 잘못된 구현: `.toUtc()` 없이 벽시계에 9시간을 더한다 — 입력이
-    // 이미 로컬(UTC+9가 아닌) 시각이면 엉뚱한 시각이 나온다.
     final kst = toKst(DateTime.utc(2026, 8, 8, 16, 30));
     expect(
       (kst.year, kst.month, kst.day, kst.hour, kst.minute),
       (2026, 8, 9, 1, 30),
     );
+  });
+
+  test('입력이 로컬 시각이어도 .toUtc()를 먼저 거친다', () {
+    // 잡아야 할 잘못된 구현: `value.add(kstOffset)` — `.toUtc()` 없이 벽시계에
+    // 9시간을 더한다.
+    //
+    // **이 검사는 원래 위 테스트의 주석이 잡겠다고 적어 둔 것인데, 그 테스트가
+    // `DateTime.utc(...)`를 먹여서 `.toUtc()`가 no-op이 되는 바람에 단언이
+    // 늘 참이었다**(리뷰 Important 2). 프로덕션의 유일한 로컬 입력은
+    // `DateTime.now()`이고, `.toUtc()`가 실제로 일하는 것도 그 경우뿐이다.
+    //
+    // 시간대와 무관하게 성립시키기 위해 **고정된 순간**을 로컬 플래그로만
+    // 바꿔서 넣는다. KST 기계에서 `add`만 하면 20:00 + 9h = 다음 날 05:00이
+    // 되어 날짜가 하루 앞서 간다.
+    final fixedInstant = DateTime.utc(2026, 8, 31, 11).toLocal();
+    final kst = toKst(fixedInstant);
+    expect((kst.year, kst.month, kst.day, kst.hour), (2026, 8, 31, 20));
+    expect(kst.isUtc, isTrue, reason: '벽시계 읽기용 값은 UTC 플래그로 정규화된다');
   });
 
   test('toKst는 날짜·달·해 넘김까지 함께 넘긴다', () {

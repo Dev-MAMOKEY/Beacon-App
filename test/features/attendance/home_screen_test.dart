@@ -197,9 +197,16 @@ class _ScriptedAttendanceRepository implements AttendanceRepository {
   }
 }
 
-/// 어떤 (year, month)로 조회됐는지 기록하는 가짜.
+/// 어떤 (year, month)로 조회됐는지 기록하는 가짜. 수치와 실패도 지정할 수 있다.
 class _RecordingRecordsRepository implements RecordsRepository {
+  _RecordingRecordsRepository({this.present = 0, this.late = 0, this.absent = 0});
+
+  final int present;
+  final int late;
+  final int absent;
+
   final List<(int year, int month)> requested = [];
+  bool shouldThrow = false;
 
   @override
   Future<MonthlyRecords> fetch({
@@ -208,33 +215,14 @@ class _RecordingRecordsRepository implements RecordsRepository {
     required int month,
   }) async {
     requested.add((year, month));
+    if (shouldThrow) throw Exception('조회 실패');
     return MonthlyRecords(
       year: year,
       month: month,
       records: const [],
-      present: 0,
-      absent: 0,
-      late: 0,
-      etc: 0,
-      attendanceRate: 0,
-    );
-  }
-}
-
-class _EmptyRecordsRepository implements RecordsRepository {
-  @override
-  Future<MonthlyRecords> fetch({
-    required int clubId,
-    required int year,
-    required int month,
-  }) async {
-    return MonthlyRecords(
-      year: year,
-      month: month,
-      records: const [],
-      present: 0,
-      absent: 0,
-      late: 0,
+      present: present,
+      absent: absent,
+      late: late,
       etc: 0,
       attendanceRate: 0,
     );
@@ -295,7 +283,7 @@ _pumpHome(
         beaconConfigRepository ?? _FakeBeaconConfigRepository(),
       ),
       attendanceRepositoryProvider.overrideWithValue(attendanceRepository),
-      recordsRepositoryProvider.overrideWithValue(recordsRepository ?? _EmptyRecordsRepository()),
+      recordsRepositoryProvider.overrideWithValue(recordsRepository ?? _RecordingRecordsRepository()),
       ...extraOverrides,
     ],
   );
@@ -781,7 +769,7 @@ void main() {
         beaconScannerProvider.overrideWithValue(scanner),
         beaconConfigRepositoryProvider.overrideWithValue(_FakeBeaconConfigRepository()),
         attendanceRepositoryProvider.overrideWithValue(repo),
-        recordsRepositoryProvider.overrideWithValue(_EmptyRecordsRepository()),
+        recordsRepositoryProvider.overrideWithValue(_RecordingRecordsRepository()),
       ],
     );
     addTearDown(container.dispose);
@@ -1117,50 +1105,148 @@ void main() {
     // **KST 머신에서는 `toLocal()`로 바꿔도 통과하므로** 이 그룹은
     // `TZ=UTC`에서도 반드시 돌려야 의미가 있다.
 
-    /// KST로는 2026-09-01 05:00이지만 UTC로는 2026-08-31 20:00 — 달이 갈린다.
-    DateTime boundaryClock() => DateTime.utc(2026, 8, 31, 20);
+    /// KST 9월 1일 00:00 — 경계를 **막 넘은** 순간.
+    DateTime justAfterBoundary() => DateTime.utc(2026, 8, 31, 15);
 
-    testWidgets('요약 카드는 KST 기준의 달을 조회한다', (tester) async {
-      // 잡아야 할 잘못된 구현: 기기 시계를 그대로 쓴다 → 8월을 조회한다.
+    /// KST 8월 31일 23:59 — 경계 **직전**. 위와 1분 차이다.
+    ///
+    /// 두 값을 짝으로 쓰는 이유: 경계에서 멀리 떨어진 픽스처 하나만 쓰면
+    /// 오프셋이 대략 +4~+27시간 아무 값이어도 통과한다. 실제로 처음엔
+    /// `DateTime.utc(2026, 8, 31, 20)` 하나만 썼고, `kstOffset`을 5시간으로
+    /// 바꾸는 변이를 새 테스트가 **하나도** 잡지 못했다(리뷰 Important 3).
+    DateTime justBeforeBoundary() => DateTime.utc(2026, 8, 31, 14, 59);
+
+    /// 같은 순간이지만 **로컬 플래그**로 넣는다 — 프로덕션의 `DateTime.now()`가
+    /// 정확히 이 모양이고, `toKst`의 `.toUtc()`가 실제로 일하는 것도 이
+    /// 경우뿐이다. `DateTime.utc(...)`만 먹이면 `.toUtc()`를 지워도, 결과에
+    /// `.toLocal()`을 덧붙여도 전부 통과한다(리뷰 Important 2·3).
+    DateTime justBeforeBoundaryLocal() => DateTime.utc(2026, 8, 31, 14, 30).toLocal();
+
+    Future<_RecordingRecordsRepository> pumpWithClock(
+      WidgetTester tester,
+      DateTime Function() clock,
+    ) async {
       final records = _RecordingRecordsRepository();
       await _pumpHome(
         tester,
         scanner: FakeBeaconScanner(),
         attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
         recordsRepository: records,
-        clock: boundaryClock,
+        clock: clock,
       );
+      return records;
+    }
 
+    testWidgets('경계를 막 넘으면 요약 카드가 다음 달을 조회한다', (tester) async {
+      final records = await pumpWithClock(tester, justAfterBoundary);
       expect(records.requested, [(2026, 9)]);
     });
 
-    testWidgets('오늘 날짜 라벨도 KST 기준이다', (tester) async {
-      // 잡아야 할 잘못된 구현: 라벨만 기기 시계를 쓴다 → "2026년 08월 31일".
-      await _pumpHome(
-        tester,
-        scanner: FakeBeaconScanner(),
-        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
-        clock: boundaryClock,
-      );
-
-      expect(find.text('2026년 09월 01일'), findsOneWidget);
-      expect(find.text('2026년 08월 31일'), findsNothing);
+    testWidgets('경계 1분 전이면 요약 카드가 이번 달을 조회한다', (tester) async {
+      // 앞 테스트와 **1분 차이**다 — 둘이 짝을 이뤄야 오프셋이 정확히 +9시간
+      // 임을 고정한다.
+      final records = await pumpWithClock(tester, justBeforeBoundary);
+      expect(records.requested, [(2026, 8)]);
     });
 
-    testWidgets('기록 화면과 같은 달을 연다', (tester) async {
-      // 두 화면이 **같은 시각에 대해** 같은 답을 내는지 직접 맞춰 본다 —
-      // 각자 따로 검사하면 한쪽만 고쳤을 때도 통과한다.
-      final homeRecords = _RecordingRecordsRepository();
+    testWidgets('경계를 막 넘으면 오늘 날짜 라벨도 다음 달이다', (tester) async {
+      await pumpWithClock(tester, justAfterBoundary);
+      expect(find.text('2026년 09월 01일'), findsOneWidget);
+    });
+
+    testWidgets('경계 1분 전이면 오늘 날짜 라벨이 이번 달이다', (tester) async {
+      await pumpWithClock(tester, justBeforeBoundary);
+      expect(find.text('2026년 08월 31일'), findsOneWidget);
+    });
+
+    testWidgets('로컬 플래그로 들어온 시각도 KST로 옮긴다', (tester) async {
+      // 잡아야 할 잘못된 구현: `toKst`에서 `.toUtc()`를 빼거나, 결과에
+      // `.toLocal()`을 덧붙인다. UTC 픽스처만으로는 둘 다 살아남는다.
+      final records = await pumpWithClock(tester, justBeforeBoundaryLocal);
+      expect(records.requested, [(2026, 8)]);
+      expect(find.text('2026년 08월 31일'), findsOneWidget);
+    });
+
+    testWidgets('화면이 살아 있는 동안 KST 자정을 넘으면 지난달 수치를 그대로 보여주지 않는다', (
+      tester,
+    ) async {
+      // 잡아야 할 잘못된 구현: 조회 월과 렌더 시각을 대조하지 않는다. 조회는
+      // 부트스트랩 때 한 번, 라벨은 매 빌드마다다 — 자정을 넘으면 라벨만
+      // 넘어가고 카드는 지난달 수치를 그대로 들고 있다. 홈의 카드에는 월
+      // 표시가 없어 화면상 아무 신호가 없다(리뷰 Important 1).
+      var now = DateTime.utc(2026, 8, 31, 14, 58); // KST 23:58
+      final records = _RecordingRecordsRepository(present: 7, late: 2, absent: 1);
+      final scanner = FakeBeaconScanner();
+      await _pumpHome(
+        tester,
+        scanner: scanner,
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        recordsRepository: records,
+        clock: () => now,
+      );
+
+      expect(records.requested, [(2026, 8)]);
+      expect(find.text('2'), findsOneWidget, reason: '사전 조건: 8월 지각 2회가 보인다');
+
+      // 자정을 넘긴다. 스캐너 이벤트가 리빌드를 일으킨다(실제 앱과 같다).
+      now = DateTime.utc(2026, 8, 31, 15, 1); // KST 09-01 00:01
+      scanner.emit(const BeaconScanning());
+      await tester.pumpAndSettle();
+
+      expect(find.text('2026년 09월 01일'), findsOneWidget);
+      expect(
+        find.text('2'),
+        findsNothing,
+        reason: '9월 라벨 아래 8월 수치가 남아 있으면 안 된다',
+      );
+    });
+
+    testWidgets('재조회가 실패하면 이전 달 수치를 지운다', (tester) async {
+      // 잡아야 할 잘못된 구현: `catch (_)`에서 아무것도 하지 않는다. 최초
+      // 로드에서만 "대시로 남는다"가 참이고, 재부트스트랩에서는 `_records`가
+      // 이미 차 있어 **이전 달 숫자가 새 달 라벨 아래 그대로 남는다**
+      // (리뷰 Important 5). 기록 화면은 같은 상황에서 이미 비우고 있었다.
+      var now = DateTime.utc(2026, 8, 31, 14, 58);
+      final records = _RecordingRecordsRepository(present: 7, late: 2, absent: 1);
+      final (container: _, routes: _, :visible) = await _pumpHome(
+        tester,
+        scanner: FakeBeaconScanner(),
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        recordsRepository: records,
+        clock: () => now,
+      );
+      expect(find.text('2'), findsOneWidget);
+
+      // 자정을 넘긴 뒤 탭을 떠났다 돌아온다 — 재조회가 실패한다.
+      now = DateTime.utc(2026, 8, 31, 15, 1);
+      records.shouldThrow = true;
+      visible.value = false;
+      await tester.pumpAndSettle();
+      visible.value = true;
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+        await tester.pumpAndSettle();
+      }
+
+      expect(records.requested, [(2026, 8), (2026, 9)]);
+      expect(find.text('2'), findsNothing, reason: '실패했으면 옛 수치를 지워야 한다');
+    });
+
+    testWidgets('주입하지 않으면 프로덕션 기본 시계를 쓴다', (tester) async {
+      // 잡아야 할 잘못된 구현: 기본 시계를 엉뚱한 값으로 둔다. 모든 테스트가
+      // clock을 주입하므로 프로덕션 기본값(`DateTime.now`)은 한 번도 검증되지
+      // 않았고, 실제로 `DateTime.utc(1999,1,1)`로 바꿔도 409개가 전부
+      // 통과했다(리뷰 Important 4). #40의 `Timer.new`와 같은 유형이다.
+      final expected = toKst(DateTime.now());
       await _pumpHome(
         tester,
         scanner: FakeBeaconScanner(),
         attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
-        recordsRepository: homeRecords,
-        clock: boundaryClock,
       );
 
-      final recordsScreenMonth = toKst(boundaryClock());
-      expect(homeRecords.requested.single, (recordsScreenMonth.year, recordsScreenMonth.month));
+      final month = expected.month.toString().padLeft(2, '0');
+      final day = expected.day.toString().padLeft(2, '0');
+      expect(find.text('${expected.year}년 $month월 $day일'), findsOneWidget);
     });
   });
 
@@ -1741,7 +1827,7 @@ void main() {
         beaconScannerProvider.overrideWithValue(scanner),
         beaconConfigRepositoryProvider.overrideWithValue(_FakeBeaconConfigRepository()),
         attendanceRepositoryProvider.overrideWithValue(repo),
-        recordsRepositoryProvider.overrideWithValue(_EmptyRecordsRepository()),
+        recordsRepositoryProvider.overrideWithValue(_RecordingRecordsRepository()),
       ],
     );
     addTearDown(container.dispose);
@@ -1803,7 +1889,7 @@ void main() {
         beaconScannerProvider.overrideWithValue(scanner),
         beaconConfigRepositoryProvider.overrideWithValue(_FakeBeaconConfigRepository()),
         attendanceRepositoryProvider.overrideWithValue(repo),
-        recordsRepositoryProvider.overrideWithValue(_EmptyRecordsRepository()),
+        recordsRepositoryProvider.overrideWithValue(_RecordingRecordsRepository()),
       ],
     );
     addTearDown(container.dispose);
