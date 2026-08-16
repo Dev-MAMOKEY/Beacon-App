@@ -1003,6 +1003,68 @@ void main() {
     expect(find.text('비콘을 찾는 중입니다...'), findsOneWidget);
   });
 
+  testWidgets('앱이 백그라운드로 가면 스캔을 멈추고 코드 입력 팝업도 닫는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 탭 가시성(`TickerMode`)만 보고 앱 생명주기는
+    // 보지 않는다. 앱을 백그라운드로 보내면 탭은 그대로 선택된 상태라
+    // TickerMode가 바뀌지 않는데 OS는 ranging을 멈춘다 — 마지막 BeaconDetected가
+    // 그대로 남아, 방을 나갔다 돌아온 뒤에도 코드를 넣으면 통과한다
+    // (리뷰 Critical).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+    expect(scanner.stopCallCount, 0);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    // 팝업 정리는 `addPostFrameCallback`으로 미뤄진다. 생명주기 콜백은
+    // 프레임 파이프라인 **밖**에서 불리므로, 그 콜백이 도는 프레임과 제거가
+    // 트리에 반영되는 프레임을 각각 따로 흘려줘야 한다.
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(scanner.stopCallCount, 1, reason: '백그라운드에서는 스캔을 멈춰야 한다');
+    expect(
+      find.text('출석코드 입력'),
+      findsNothing,
+      reason: '돌아왔을 때 낡은 감지 상태로 열린 팝업이 남아 있으면 안 된다',
+    );
+  });
+
+  testWidgets('앱이 돌아오면 스캔을 다시 시작하고 감지 상태를 새로 쌓는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 백그라운드에서 멈추기만 하고 복귀 시 재개하지
+    // 않는다 — 사용자가 앱을 다시 열어도 비콘을 영영 찾지 못한다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('비콘을 찾는 중입니다...'), findsOneWidget, reason: '감지 상태를 그대로 믿지 않는다');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    for (var i = 0; i < 5; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+      await tester.pumpAndSettle();
+    }
+
+    expect(scanner.watchCallCount, 2, reason: '복귀하면 스캔을 다시 시작해야 한다');
+    // 재개 직후에는 아직 감지가 아니다 — 새 스트릭을 처음부터 쌓아야 한다.
+    expect(find.text('출석코드 입력'), findsNothing);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsOneWidget);
+  });
+
   testWidgets('클럽이 바뀌면 세션 id가 같아도 출석 완료 래치가 풀린다', (tester) async {
     // 잡아야 할 잘못된 구현: `_resetClubScopedState`에서 래치 초기화를
     // 빠뜨린다. 세션 id는 클럽 단위로 매겨진다(`/clubs/{clubId}/sessions/

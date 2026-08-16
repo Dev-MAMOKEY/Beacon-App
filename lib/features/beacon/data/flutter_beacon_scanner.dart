@@ -44,6 +44,15 @@ class _Session {
   StreamSubscription<beacon_lib.BluetoothState>? bluetoothSub;
   StreamSubscription<beacon_lib.RangingResult>? rangingSub;
 
+  /// [BeaconDetected]를 내보낸 뒤 무장하는 만료 타이머.
+  ///
+  /// 이게 없으면 [BeaconScanConfig.maxSampleGap]은 **다음 샘플이 도착할 때만**
+  /// 평가된다. 스트림이 조용해지면 — 앱이 백그라운드로 가면 ranging이 정확히
+  /// 그렇게 멈춘다 — 감지 상태가 무기한 남아, 방을 나갔다 돌아와도 출석이
+  /// 그대로 통과한다(리뷰 Critical). `checkIn` 요청은 근접 증거를 담지 않아
+  /// 서버가 재검증할 수 없으므로, 이 만료가 보증의 일부다.
+  Timer? expiryTimer;
+
   /// 지금 블루투스가 꺼져 있다고 보고 있는지. off→on "전이"만 재개 신호로
   /// 삼기 위한 플래그다 — 그렇지 않으면 최초 구독 시 스트림이 흘려보내는
   /// 첫 상태(꼭 변화가 아니어도)에도 반응해 ranging을 이중으로 시작할 수
@@ -77,6 +86,26 @@ class _Session {
     }
   }
 
+  void cancelExpiry() {
+    expiryTimer?.cancel();
+    expiryTimer = null;
+  }
+
+  /// 감지 상태를 [BeaconScanConfig.maxSampleGap] 뒤에 스스로 만료시킨다.
+  /// 그 사이에 좋은 샘플이 오면 [armExpiry]가 다시 불려 타이머가 갱신된다.
+  void armExpiry(Timer Function(Duration, void Function()) createTimer) {
+    cancelExpiry();
+    expiryTimer = createTimer(config.maxSampleGap, () {
+      expiryTimer = null;
+      if (isClosed || !isDetected) return;
+      // 침묵으로 인한 만료다 — 스트릭을 처음부터 다시 쌓게 한다. 다음 좋은
+      // 샘플 하나가 곧바로 감지로 이어지면 안 된다.
+      streakStart = null;
+      lastGoodSampleAt = null;
+      add(const BeaconOutOfRange());
+    });
+  }
+
   /// ranging 구독만 취소한다 — 블루투스가 꺼졌을 때는 상태 변화 구독은
   /// 유지해야 다시 켜졌을 때 재개할 수 있다.
   Future<void> cancelRanging() async {
@@ -89,6 +118,7 @@ class _Session {
   /// 기다린다 — `stop()`이 반환된 뒤에도 네이티브 스캔이 계속 돌고 있는
   /// 상태를 만들지 않기 위해서다.
   Future<void> teardown() async {
+    cancelExpiry();
     final rs = rangingSub;
     rangingSub = null;
     final bs = bluetoothSub;
@@ -117,6 +147,7 @@ class FlutterBeaconScanner implements BeaconScanner {
     Future<beacon_lib.AuthorizationStatus> Function()? authorizationStatus,
     Future<bool> Function()? requestAuthorization,
     Duration Function() Function()? createElapsedClock,
+    Timer Function(Duration, void Function())? createTimer,
   })  : _rangingStreamFactory = rangingStreamFactory ?? beacon_lib.flutterBeacon.ranging,
         _bluetoothStateStreamFactory = bluetoothStateStreamFactory ?? beacon_lib.flutterBeacon.bluetoothStateChanged,
         _currentBluetoothState = currentBluetoothState ?? (() => beacon_lib.flutterBeacon.bluetoothState),
@@ -124,7 +155,8 @@ class FlutterBeaconScanner implements BeaconScanner {
             initializeAndCheckScanning ?? (() => beacon_lib.flutterBeacon.initializeAndCheckScanning),
         _authorizationStatus = authorizationStatus ?? (() => beacon_lib.flutterBeacon.authorizationStatus),
         _requestAuthorization = requestAuthorization ?? (() => beacon_lib.flutterBeacon.requestAuthorization),
-        _createElapsedClock = createElapsedClock ?? _defaultElapsedClockFactory;
+        _createElapsedClock = createElapsedClock ?? _defaultElapsedClockFactory,
+        _createTimer = createTimer ?? Timer.new;
 
   /// 매 `watch()`마다 0부터 새로 흐르는 단조 시계를 만든다. `Stopwatch`는
   /// 시스템 시각이 아니라 단조 클럭을 쓰므로 벽시계 점프의 영향을 받지
@@ -141,6 +173,11 @@ class FlutterBeaconScanner implements BeaconScanner {
   final Future<beacon_lib.AuthorizationStatus> Function() _authorizationStatus;
   final Future<bool> Function() _requestAuthorization;
   final Duration Function() Function() _createElapsedClock;
+
+  /// 감지 만료 타이머를 만드는 팩토리. 테스트가 시간을 직접 흘려보낼 수
+  /// 있도록 주입 가능하게 뒀다 — 나머지 시간 판정은 샘플 도착 시각으로
+  /// 하지만, "아무 샘플도 오지 않는다"는 사건만은 타이머로만 관측된다.
+  final Timer Function(Duration, void Function()) _createTimer;
 
   _Session? _session;
 
@@ -369,6 +406,9 @@ class FlutterBeaconScanner implements BeaconScanner {
       if (elapsed >= Duration(seconds: config.stabilizationSeconds)) {
         session.isDetected = true;
         session.add(BeaconDetected(rawRssi));
+        // 좋은 샘플이 올 때마다 만료 시계를 다시 감는다. 샘플이 끊기면
+        // 이 타이머가 스스로 OutOfRange로 되돌린다.
+        session.armExpiry(_createTimer);
       } else {
         session.add(const BeaconScanning());
       }
@@ -378,6 +418,8 @@ class FlutterBeaconScanner implements BeaconScanner {
       // 모인다.
       session.streakStart = null;
       session.lastGoodSampleAt = null;
+      // 나쁜 샘플이 이미 판정을 내렸으니 만료 타이머는 필요 없다.
+      session.cancelExpiry();
       if (session.isDetected) {
         // OutOfRange는 안정적이어야 한다 — `isDetected`를 여기서 false로
         // 되돌리면 바로 다음 나쁜 프레임이 Scanning으로 깜빡인다. 새

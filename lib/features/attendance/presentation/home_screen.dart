@@ -95,7 +95,7 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   StreamSubscription<BeaconScanState>? _beaconSub;
   BeaconScanState _beaconState = const BeaconIdle();
 
@@ -168,6 +168,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ///    다이얼로그 때문에 "숨겨졌다"고 오판하지 않는다.
   bool _visible = true;
 
+  /// 홈 **탭**이 선택돼 있는지. [_visible]은 이 값과 [_appResumed]의 AND다.
+  bool _tabVisible = true;
+
+  /// 앱이 포그라운드에 있는지.
+  ///
+  /// 탭 가시성만으로는 부족하다 — 앱을 백그라운드로 보내면 탭은 그대로
+  /// 선택된 상태라 `TickerMode`가 바뀌지 않는데, OS는 ranging을 멈춘다.
+  /// 그러면 마지막으로 받은 [BeaconDetected]가 그대로 남아, 방을 나갔다
+  /// 돌아온 뒤에도 코드를 넣으면 통과한다(리뷰 Critical). 스캐너 쪽 만료
+  /// 타이머와 함께 이 관찰이 그 창을 닫는다 — 타이머는 "샘플이 끊겼다"를,
+  /// 이 값은 "우리가 아예 볼 수 없는 구간에 들어갔다"를 각각 처리한다.
+  bool _appResumed = true;
+
   /// 지금 실제로 화면에 떠 있는(것으로 우리가 추적하는) 상태 기반 팝업과
   /// **그 라우트 객체**.
   ///
@@ -204,6 +217,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.initState();
     _scanner = ref.read(beaconScannerProvider);
     _rootNavigator = Navigator.of(context, rootNavigator: true);
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (!mounted) return;
+    _appResumed = state == AppLifecycleState.resumed;
+    // `setState`로 감싸는 이유: 생명주기 콜백은 위젯 트리를 더럽히지 않아
+    // 프레임이 예약되지 않는다. `_onBecameHidden`이 팝업 정리를
+    // `addPostFrameCallback`으로 미루므로, 프레임이 없으면 그 콜백이 영영
+    // 돌지 않아 낡은 감지로 열린 팝업이 그대로 남는다.
+    setState(_applyVisibility);
+  }
+
+  /// 탭 가시성과 앱 포그라운드 여부를 합쳐 실효 가시성을 갱신한다.
+  void _applyVisibility() {
+    final next = _tabVisible && _appResumed;
+    if (next == _visible) return;
+    _visible = next;
+    if (next) {
+      _onBecameVisible();
+    } else {
+      _onBecameHidden();
+    }
   }
 
   @override
@@ -212,18 +250,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 홈 탭이 보이는지/숨겨졌는지는 InheritedWidget(`_EffectiveTickerMode`)
     // 의존성으로 전달되므로, 그 값이 뒤집히는 순간 이 콜백이 불린다.
     // `TickerMode.of`는 3.35에서 deprecated돼 `valuesOf`를 쓴다.
-    final visible = TickerMode.valuesOf(context).enabled;
-    if (visible == _visible) return;
-    _visible = visible;
-    if (visible) {
-      _onBecameVisible();
-    } else {
-      _onBecameHidden();
-    }
+    _tabVisible = TickerMode.valuesOf(context).enabled;
+    _applyVisibility();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // 이 시점 이후에 도착하는 모든 비동기 완료를 무효화한다.
     _bootstrapGeneration++;
     _scanGeneration++;
