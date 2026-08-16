@@ -52,6 +52,21 @@ class AuthInterceptor extends Interceptor {
       return handler.next(err);
     }
 
+    // 사용자가 **방금 입력해 보낸 자격**이 틀린 것이지 액세스 토큰이 만료된
+    // 게 아니다. 갱신을 시도하면 세 가지가 한꺼번에 잘못된다 —
+    //   1. 회전 한 번을 헛되이 태운다,
+    //   2. 틀린 비밀번호를 서버에 두 번 보낸다(잠금·레이트리밋 카운터),
+    //   3. 그 갱신 자체가 거부되면 토큰을 지우고 **로그아웃시킨다** —
+    //      현재 비밀번호를 잘못 입력한 것만으로.
+    // 실측으로 확인된 경로다(리뷰 Important 2).
+    //
+    // `_isAuthEndpoint`처럼 경로를 통째로 면제하지 않는 이유: 그러면 그
+    // 엔드포인트에서 액세스 토큰이 **진짜로** 만료됐을 때 갱신이 일어나지
+    // 않아 사용자가 헛된 오류를 본다. 상태가 아니라 코드로 가른다.
+    if (_bodyErrorCode(err.response) == ErrorCode.invalidCredentials) {
+      return handler.next(err);
+    }
+
     final sentToken = _bearerOf(err.requestOptions);
     final currentToken = await _tokens.readAccessToken();
 
@@ -198,13 +213,19 @@ class AuthInterceptor extends Interceptor {
   /// 인식된 인증 실패 코드를 조용히 일시적 실패로 만들었다.
   bool _isAuthFailureResponse(Response<Object?>? response) {
     if (response == null) return false;
-    final body = response.data;
-    final error = body is Map<String, dynamic> ? body['error'] : null;
-    final wire = error is Map ? error['code'] : null;
     return isAuthFailure(
-      code: ErrorCode.fromWire(wire is String ? wire : null),
+      code: _bodyErrorCode(response),
       statusCode: response.statusCode,
     );
+  }
+
+  /// 응답 본문의 `error.code`. 본문이 없거나 형태가 다르면
+  /// [ErrorCode.fromWire]가 미상 코드로 수렴시킨다.
+  ErrorCode _bodyErrorCode(Response<Object?>? response) {
+    final body = response?.data;
+    final error = body is Map<String, dynamic> ? body['error'] : null;
+    final wire = error is Map ? error['code'] : null;
+    return ErrorCode.fromWire(wire is String ? wire : null);
   }
 
   /// [generation]이 여전히 최신일 때만 세션을 만료시킨다. 이 flight가
