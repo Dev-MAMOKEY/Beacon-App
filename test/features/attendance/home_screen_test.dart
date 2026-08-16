@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:beacon_app/components/ui/button.dart';
 import 'package:beacon_app/components/ui/otp_input.dart';
+import 'package:beacon_app/components/ui/popup.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
@@ -1081,18 +1082,92 @@ void main() {
     expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
   });
 
-  testWidgets('응답이 도착할 때 홈이 숨겨져 있으면 실패 토스트도 띄우지 않는다', (tester) async {
-    // 잡아야 할 잘못된 구현: 홈의 토스트 호출부에 `_visible` 가드가 없다.
-    // `showAppToast`는 `AppShell`의 공유 `ScaffoldMessenger`를 잡으므로 숨은
-    // 브랜치가 띄운 토스트가 지금 보이는 탭 위에 뜬다. 마이페이지는 이미
-    // 같은 가드를 두고 있었다(리뷰 Important 2).
+  testWidgets('서버 오류 메시지는 토스트가 아니라 팝업 안에 보인다', (tester) async {
+    // 잡아야 할 잘못된 구현: `showAppToast`로 띄운다. 그 `SnackBar`는 셸
+    // `Scaffold` 안에 그려지는데, 코드 입력 팝업이 아직 열려 있어 그 위에
+    // 깔린 `ModalBarrier`(스크림)가 덮는다. 사용자는 실패한 것만 알고 이유는
+    // 끝내 못 본다.
+    //
+    // **`find.text`만으로는 인라인과 토스트를 구별하지 못한다** — 토스트도
+    // 같은 문자열을 그린다. `SnackBar` 부재를 함께 검사해야 판별된다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'));
+    final (container: _, :routes, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    // **`find.text`만으로는 어디에 그려졌는지 알 수 없다.** 오류 문구를 홈
+    // 본문(스크림 **아래**)에 그리는 구현도 그 검사를 통과한다 — 리뷰에서
+    // 실제로 그 변이가 405개를 전부 통과했고, 그게 바로 이 수정이 막으려던
+    // 버그다. 팝업 카드의 자손인지까지 봐야 한다.
+    expect(
+      find.descendant(of: find.byType(AppPopupCard), matching: find.text('서버에 연결하지 못했습니다.')),
+      findsOneWidget,
+      reason: '스크림 위(팝업 안)에 그려져야 한다',
+    );
+    expect(find.byType(SnackBar), findsNothing, reason: '스크림 아래로 가려질 자리에 띄우면 안 된다');
+    // 팝업이 아직 열려 있는 상태여야 이 검사가 의미를 갖는다 — 팝업이
+    // 닫혀 있었다면 토스트를 써도 가려지지 않는다.
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '이 시점에 팝업은 열려 있다');
+    expect(routes.stack, hasLength(2), reason: '스크림을 깐 팝업 라우트가 살아 있다');
+    expect(find.text('다시 시도'), findsOneWidget);
+  });
+
+  testWidgets('예상 못 한 예외의 안내도 토스트가 아니라 팝업 안에 보인다', (tester) async {
+    // 잡아야 할 잘못된 구현: `catch (_)` 분기만 토스트로 남겨 둔다. 이 경로는
+    // `ApiException`이 아닌 예외(파싱 실패 등)에서만 도므로 어떤 테스트도
+    // 지나가지 않았고, 실제로 이 분기만 되돌리는 변이가 살아남았다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(Exception('파싱 실패'));
+    final (container: _, :routes, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byType(AppPopupCard),
+        matching: find.text('출석 처리에 실패했습니다. 다시 시도해주세요.'),
+      ),
+      findsOneWidget,
+      reason: '스크림 위(팝업 안)에 그려져야 한다',
+    );
+    expect(find.byType(SnackBar), findsNothing, reason: '스크림 아래로 가려질 자리에 띄우면 안 된다');
+    // `routes.stack`만으로는 **어느** 팝업인지 알 수 없다 — 코드 팝업이 닫히고
+    // 블루투스 팝업이 열린 구현도 통과한다(리뷰 Minor 3).
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '코드 입력 팝업이 떠 있어야 한다');
+    expect(routes.stack, hasLength(2), reason: '스크림을 깐 팝업 라우트가 살아 있다');
+  });
+
+  testWidgets('요청 중에 팝업이 닫히면 메시지를 토스트로 돌린다', (tester) async {
+    // 잡아야 할 잘못된 구현: 메시지를 **항상** 팝업 안에 적는다. 요청이 도는
+    // 사이에 범위를 벗어나면 `_codeConditionRaw`가 거짓이 돼 `_syncPopups`가
+    // 팝업을 닫는데, 그러면 메시지가 죽은 `_CodeEntryState`로 들어가
+    // **아무 데도 보이지 않는다** — 재시도 버튼도 그 팝업 안이라 함께
+    // 사라진다. 수정 전(develop)에는 최소한 토스트라도 보였다(리뷰 Important 1).
     final scanner = FakeBeaconScanner();
     final gate = Completer<void>();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
       ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
       ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
       ..gate = gate;
-    final (container: _, routes: _, :visible) = await _pumpHome(
+    final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -1103,21 +1178,28 @@ void main() {
     await _enterOtp(tester, '1234');
     await tester.pump();
 
-    visible.value = false;
+    // 요청이 도는 사이에 범위를 벗어난다 — 팝업이 닫힌다.
+    scanner.emit(const BeaconOutOfRange());
     await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '사전 조건: 팝업이 닫혔다');
+    _expectNoLeftoverPopupRoute(routes);
 
     gate.complete();
     await tester.pumpAndSettle();
 
-    expect(find.byType(SnackBar), findsNothing, reason: '숨은 홈이 다른 탭 위로 토스트를 쏘면 안 된다');
+    expect(
+      find.byType(SnackBar),
+      findsOneWidget,
+      reason: '팝업이 없으면 토스트가 유일하게 보이는 자리다',
+    );
+    expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
   });
 
-  testWidgets('보이는 동안 실패하면 토스트가 실제로 뜬다', (tester) async {
-    // 부정 단언만 있으면 `_showToastIfVisible`을 빈 함수로 만들거나 호출을
-    // 통째로 지워도 통과한다 — 리뷰에서 실제로 그 변이가 살아남았다.
-    // 긍정 짝이 있어야 "가려야 할 때 가린다"와 "보여야 할 때 보인다"가
-    // 함께 고정된다(리뷰 Important 3).
+  testWidgets('재시도하면 이전 오류 메시지가 지워진다', (tester) async {
+    // 잡아야 할 잘못된 구현: 재시도 시 `clearErrorMessage`를 빠뜨려, 새 시도가
+    // 도는 동안 옛 실패 문구가 그대로 남는다.
     final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
       ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
       ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'));
@@ -1127,9 +1209,23 @@ void main() {
     await tester.pumpAndSettle();
     await _enterOtp(tester, '1234');
     await tester.pumpAndSettle();
-
-    expect(find.byType(SnackBar), findsOneWidget);
     expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
+
+    // 다음 시도는 게이트로 붙잡아 "도는 중"에서 멈춘다.
+    repo
+      ..results.add(AttendanceStatus.present)
+      ..gate = gate;
+    await tester.tap(find.text('다시 시도'));
+    await tester.pump();
+
+    expect(
+      find.text('서버에 연결하지 못했습니다.'),
+      findsNothing,
+      reason: '새 시도가 도는 동안 옛 실패 문구가 남아 있으면 안 된다',
+    );
+
+    gate.complete();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('보이는 동안 이미 출석 처리된 세션이면 그 토스트도 실제로 뜬다', (tester) async {
@@ -1184,14 +1280,16 @@ void main() {
     _expectNoLeftoverPopupRoute(routes, reason: '탭이 아니라 앱이 가려진 경우에도 모달을 쌓으면 안 된다');
   });
 
-  testWidgets('앱이 백그라운드인 채 응답이 오면 실패 토스트도 띄우지 않는다', (tester) async {
+  testWidgets('앱이 백그라운드인 채 응답이 오면 이미 출석 토스트도 띄우지 않는다', (tester) async {
     // 잡아야 할 잘못된 구현: 토스트 가드를 `_visible`이 아니라 `_tabVisible`로
     // 둔다. 탭은 선택돼 있는데 폰이 잠긴 경우를 놓친다(리뷰 Important 2).
+    //
+    // `ALREADY_CHECKED_IN`을 쓰는 이유: 실패 분기는 #42에서 토스트를 아예
+    // 쓰지 않게 됐으므로, 그걸로는 토스트 가드를 검증할 수 없다.
     final scanner = FakeBeaconScanner();
     final gate = Completer<void>();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
-      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
-      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.alreadyCheckedIn, '이미 출석했습니다.'))
       ..gate = gate;
     await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
 
@@ -1533,7 +1631,15 @@ void main() {
 
     expect(find.byType(AppOtpInput), findsOneWidget);
     expect(find.text('다시 시도'), findsNothing);
-    expect(find.text('비밀번호가 올바르지 않습니다'), findsNothing);
+    // 이 픽스처가 실제로 만드는 문구를 검사해야 한다. 원래는 오답 문구
+    // ('비밀번호가 올바르지 않습니다')를 검사했는데, `ErrorCode.unknown`은
+    // 그 문구를 만들지 않으므로 **이 단언은 늘 참이었다** — 팝업 재개방 시
+    // 오류 문구 초기화를 지워도 통과했다(리뷰 Minor 1).
+    expect(
+      find.text('일시적인 오류'),
+      findsNothing,
+      reason: '다시 열린 팝업이 이전 시도의 오류 문구를 끌고 오면 안 된다',
+    );
   });
 
   // ---------------------------------------------------------------------

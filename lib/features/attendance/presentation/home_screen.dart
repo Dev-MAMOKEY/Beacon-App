@@ -68,18 +68,31 @@ HomePopupTarget resolveHomePopupTarget({
 /// notifier를 `ListenableBuilder`로 직접 구독한다.
 class _CodeEntryState extends ChangeNotifier {
   bool submitting = false;
-  String? invalidCodeMessage;
+
+  /// 팝업 **안**에 그리는 오류 문구.
+  ///
+  /// 원래는 `invalidCodeMessage`라는 이름으로 오답(`INVALID_ATTENDANCE_CODE`)
+  /// 전용이었다. 나머지 실패(네트워크 오류·그 밖의 서버 오류)는 `showAppToast`
+  /// 로 갔는데, 그 `SnackBar`는 셸 `Scaffold` 안에 그려지고 그건 코드 입력
+  /// 팝업이 깐 `ModalBarrier`(`AppColors.scrim`) **아래**다. 팝업이 아직 열려
+  /// 있는 상태에서 부르므로 사용자는 실패 사실만 알고 이유는 끝내 못 봤다
+  /// (리뷰 Important). 그래서 오류 문구 전반을 담는 자리로 넓혔다.
+  ///
+  /// 같은 문제를 `password_change_popup.dart`가 이미 반대 방향으로 풀어 뒀다 —
+  /// 필드 단위가 아닌 오류를 팝업 안 `_formError`로 보낸다.
+  String? errorMessage;
+
   bool needsManualRetry = false;
 
   void update({
     bool? submitting,
-    String? invalidCodeMessage,
-    bool clearInvalidCodeMessage = false,
+    String? errorMessage,
+    bool clearErrorMessage = false,
     bool? needsManualRetry,
   }) {
     if (submitting != null) this.submitting = submitting;
-    if (clearInvalidCodeMessage) this.invalidCodeMessage = null;
-    if (invalidCodeMessage != null) this.invalidCodeMessage = invalidCodeMessage;
+    if (clearErrorMessage) this.errorMessage = null;
+    if (errorMessage != null) this.errorMessage = errorMessage;
     if (needsManualRetry != null) this.needsManualRetry = needsManualRetry;
     notifyListeners();
   }
@@ -352,7 +365,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       if (!mounted) return;
       _codeEntryState.update(
         submitting: false,
-        clearInvalidCodeMessage: true,
+        clearErrorMessage: true,
         needsManualRetry: false,
       );
     });
@@ -570,6 +583,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     showAppToast(context, message);
   }
 
+  /// 출석 체크 결과 메시지를 **지금 실제로 보이는 자리**에 내보낸다.
+  ///
+  /// 어느 자리가 맞는지는 고정돼 있지 않다 — 요청이 도는 사이에 팝업이
+  /// 닫힐 수 있기 때문이다. 그래서 쓰는 시점에 고른다.
+  ///
+  /// - 코드 입력 팝업이 떠 있으면 **팝업 안**에 적는다. 토스트는 셸
+  ///   `Scaffold` 안에 그려지고 그건 팝업의 `ModalBarrier`(스크림) 아래라
+  ///   가려진다(#42).
+  /// - 팝업이 없으면 **토스트**로 띄운다. 처음엔 무조건 팝업 안에 적었는데,
+  ///   요청 도중 범위 이탈·세션 교체로 팝업이 닫히면 메시지가 죽은
+  ///   `_CodeEntryState`로 들어가 **아무 데도 보이지 않았다** — 재시도 버튼도
+  ///   그 팝업 안에 있어 함께 사라진다(리뷰 Important 1).
+  ///
+  /// 남는 구멍이 하나 있다: 블루투스 꺼짐 팝업이 떠 있으면 그쪽 스크림이
+  /// 토스트를 덮는다. 그 상황에서 사용자가 해야 할 일은 블루투스를 켜는
+  /// 것이고 그 안내는 팝업 자신이 하고 있으므로, 출석 실패 사유를 덧대지
+  /// 않는다.
+  void _reportCheckInMessage(String message) {
+    if (_shownPopup == HomePopupTarget.codeInput) {
+      _codeEntryState.update(errorMessage: message);
+    } else {
+      _showToastIfVisible(message);
+    }
+  }
+
   void _removeRoutes(List<Route<void>> routes) {
     for (final route in routes) {
       if (route.isActive) _rootNavigator.removeRoute(route);
@@ -610,7 +648,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // 비어 있다.)
     _codeEntryState.update(
       submitting: false,
-      clearInvalidCodeMessage: true,
+      clearErrorMessage: true,
       needsManualRetry: false,
     );
     return _pushOwnedPopup(
@@ -676,7 +714,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // 버튼이 방금 새로 대입된 `_lastOtpCode`로 두 번째 요청을 겹쳐 띄운다.
     _codeEntryState.update(
       submitting: true,
-      clearInvalidCodeMessage: true,
+      clearErrorMessage: true,
       needsManualRetry: false,
     );
 
@@ -692,7 +730,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       // 않은 비동기 오류가 된다(리뷰 Important 4).
       if (!mounted || !isLatest()) return;
       _codeEntryState.update(submitting: false, needsManualRetry: true);
-      _showToastIfVisible('출석 처리에 실패했습니다. 다시 시도해주세요.');
+      _reportCheckInMessage('출석 처리에 실패했습니다. 다시 시도해주세요.');
       return;
     }
 
@@ -729,14 +767,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
       case CheckInInvalidCode():
         _otpController.shake();
-        _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
+        _reportCheckInMessage('비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _checkedInSessionId = session.sessionId);
+        // `_syncPopups()`가 팝업을 닫아 줄 것이라고 단정하면 안 된다 — 그
+        // 함수는 대상이 **바뀔 때만** 움직인다(`if (target == _shownPopup)
+        // return;`). 세션이 요청 중에 교체되면 `_attendanceDone`이 새 세션에
+        // 대해 거짓이라 코드 입력 팝업이 그대로 남는다(리뷰 Important 2).
         _syncPopups();
-        _showToastIfVisible('이미 출석 처리되었습니다');
+        _reportCheckInMessage('이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
         _codeEntryState.update(needsManualRetry: true);
-        _showToastIfVisible(message);
+        _reportCheckInMessage(message);
     }
   }
 
@@ -930,10 +972,10 @@ class _CodeInputPopupContent extends StatelessWidget {
           enabled: !state.submitting,
           onCompleted: onCompleted,
         ),
-        if (state.invalidCodeMessage != null) ...[
+        if (state.errorMessage != null) ...[
           const SizedBox(height: 8),
           Text(
-            state.invalidCodeMessage!,
+            state.errorMessage!,
             textAlign: TextAlign.center,
             style: typography.body3.copyWith(color: colors.red),
           ),
