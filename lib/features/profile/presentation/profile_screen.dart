@@ -55,11 +55,27 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   /// 얹혀 있으면 엉뚱한 것을 닫는다(`records_screen.dart`와 같은 이유).
   Route<void>? _popupRoute;
 
-  /// 진행 중인 알림 토글 요청의 세대. 토글을 빠르게 여러 번 누르면 요청이
-  /// 겹치고, 먼저 보낸 요청의 **실패**가 나중에 도착해 최신 상태를
-  /// 되돌려버릴 수 있다 — 홈(클럽 전환)·기록(월 이동)이 냈던 것과 같은
-  /// 결함이다. 결과를 반영할 자격은 항상 최신 요청에만 있다.
+  /// 진행 중인 알림 토글 요청의 세대. `dispose()` 이후에 도착하는 응답을
+  /// 무효화하는 용도로 남는다.
   int _pushGeneration = 0;
+
+  /// **서버가 마지막으로 확인해 준** 알림 값. 실패 시 되돌릴 기준이다.
+  ///
+  /// 눌린 시점의 `profile.pushEnabled`를 붙잡아 두면 안 된다 — 앞선 토글이
+  /// 이미 낙관적으로 써 넣은 값이라 "되돌리기"가 확인되지 않은 값으로
+  /// 되돌아간다. 실제로 토글을 두 번 눌러 **둘 다 실패**하면 화면은 ON,
+  /// 서버는 OFF로 갈라졌다(리뷰 Critical 1).
+  bool? _confirmedPushEnabled;
+
+  /// 사용자가 가장 최근에 원한 알림 값. 요청이 떠 있는 동안 눌린 값을 여기
+  /// 모아 두었다가 순서대로 하나씩 보낸다.
+  bool? _desiredPushEnabled;
+
+  /// 알림 토글 요청이 떠 있는지. **쓰기를 직렬화하는 것이 핵심이다** —
+  /// 세대 검사는 늦게 도착한 *응답*만 버릴 뿐 서버 도착 순서를 정하지
+  /// 못한다. 켜기·끄기를 연달아 보내면 뒤에 보낸 요청이 서버에 먼저 닿아
+  /// 서버는 ON, 화면은 OFF로 끝날 수 있다(리뷰 Critical 1의 역순 성공).
+  bool _pushInFlight = false;
 
   /// `dispose()` 시점에는 이 화면의 엘리먼트가 트리에서 빠지는 중이라
   /// `Navigator.of(context)`를 신뢰할 수 없다 — 미리 잡아 둔다. 팝업은 루트
@@ -139,32 +155,88 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   // 동작
   // ---------------------------------------------------------------------
 
-  /// 알림 토글. 낙관적으로 먼저 반영하고, 서버가 거절하면 **원래 값으로**
-  /// 되돌린 뒤 토스트로 알린다(요구사항 3). 되돌릴 값은 눌린 시점의 값을
-  /// 그대로 붙잡아 둔다 — 실패 시점에 다시 읽으면 그건 이미 우리가 낙관적
-  /// 으로 써 넣은 값이라 "되돌리기"가 아무것도 되돌리지 못한다.
-  Future<void> _onPushToggled(MemberProfile profile, bool next) async {
-    final previous = profile.pushEnabled;
-    if (next == previous) return;
-
-    final generation = ++_pushGeneration;
-    final session = ref.read(sessionControllerProvider.notifier);
-    session.applyProfileChange(pushEnabled: next);
-
-    try {
-      // `name`은 `PATCH /members/me`의 **필수** 필드다 — 토글만 바꿀 때도
-      // 현재 이름을 함께 보내지 않으면 서버가 400을 낸다.
-      await ref.read(profileRepositoryProvider).updateProfile(
-            name: profile.name,
-            pushEnabled: next,
-          );
-    } on ApiException catch (error) {
-      // `await` 뒤의 접근이라 `mounted`가 필요하다. 세대 검사도 함께 —
-      // 이 실패는 이미 다른 토글에 밀려난 옛 요청의 것일 수 있다.
-      if (!mounted || generation != _pushGeneration) return;
-      ref.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: previous);
-      showAppToast(context, error.message);
+  /// 알림 토글. 낙관적으로 먼저 반영하고, 서버가 거절하면 **서버가 마지막으로
+  /// 확인해 준 값으로** 되돌린 뒤 토스트로 알린다(요구사항 3).
+  ///
+  /// 요청은 [_drainPushQueue]가 **한 번에 하나씩** 보낸다. 겹쳐 보내면
+  /// 서버 도착 순서를 우리가 정할 수 없어, 응답을 아무리 잘 걸러도 서버와
+  /// 화면이 갈라진다.
+  void _onPushToggled(MemberProfile profile, bool next) {
+    _confirmedPushEnabled ??= profile.pushEnabled;
+    if (next == _desiredPushEnabled ||
+        (_desiredPushEnabled == null && next == _confirmedPushEnabled)) {
+      return;
     }
+
+    _desiredPushEnabled = next;
+    ref.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: next);
+    unawaited(_drainPushQueue());
+  }
+
+  /// 원하는 값과 확인된 값이 같아질 때까지 순차 전송한다. 중간에 여러 번
+  /// 눌린 값은 [_desiredPushEnabled] 하나로 합쳐지므로, 세 번 눌러도 서버로
+  /// 나가는 요청은 최대 두 번이다.
+  Future<void> _drainPushQueue() async {
+    if (_pushInFlight) return;
+    _pushInFlight = true;
+    final generation = _pushGeneration;
+    try {
+      while (true) {
+        final target = _desiredPushEnabled;
+        if (target == null || target == _confirmedPushEnabled) return;
+
+        try {
+          // `name`은 `PATCH /members/me`의 **필수** 필드다. 붙잡아 둔 값이
+          // 아니라 **보내는 시점**의 세션에서 읽는다 — 토글이 떠 있는 동안
+          // 이름이 바뀌면, 붙잡아 둔 옛 이름이 서버의 이름을 되돌린다
+          // (리뷰 Important 3).
+          await ref.read(profileRepositoryProvider).updateProfile(
+                name: _currentName() ?? '',
+                pushEnabled: target,
+              );
+        } catch (error) {
+          // `ApiException`만 잡으면 그 밖의 예외가 새어 낙관적 값이 적용된
+          // 채로 남고 처리되지 않은 비동기 오류가 된다 — 홈 화면이 이미
+          // 같은 지적을 받아 고쳤다(리뷰 Important 4).
+          if (!mounted || generation != _pushGeneration) return;
+          final confirmed = _confirmedPushEnabled;
+          final desired = _desiredPushEnabled;
+          _desiredPushEnabled = null;
+          if (confirmed != null) {
+            ref
+                .read(sessionControllerProvider.notifier)
+                .applyProfileChange(pushEnabled: confirmed);
+          }
+          // 사용자가 이미 마음을 바꿔 확인된 값과 같아졌다면 알릴 게 없다 —
+          // 켰다가 곧바로 끈 뒤 켜기 요청이 실패한 경우, 최종 의도(끄기)는
+          // 그대로 만족된 상태다.
+          if (desired == confirmed) return;
+          // 숨겨진 탭에서 토스트를 띄우면 `AppShell`의 `Scaffold`가 하나뿐이라
+          // 사용자가 지금 보고 있는 **다른 탭 위에** 뜬다(리뷰 Critical 2).
+          // 되돌리기는 전역 상태라 그대로 두고, 알림만 참는다.
+          if (_visible) {
+            showAppToast(
+              context,
+              error is ApiException ? error.message : '알림 설정을 바꾸지 못했어요.',
+            );
+          }
+          return;
+        }
+
+        if (!mounted || generation != _pushGeneration) return;
+        _confirmedPushEnabled = target;
+        if (_desiredPushEnabled == target) _desiredPushEnabled = null;
+      }
+    } finally {
+      _pushInFlight = false;
+    }
+  }
+
+  /// 지금 세션이 들고 있는 이름. 세션이 `SessionReady`가 아닌 순간은
+  /// 이론상 이 화면에 도달할 수 없지만 방어적으로 null을 돌려준다.
+  String? _currentName() {
+    final state = ref.read(sessionControllerProvider).value;
+    return state is SessionReady ? state.profile.name : null;
   }
 
   void _openNameChangePopup(MemberProfile profile) {
@@ -264,7 +336,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         trailing: AppSwitch(
                           value: profile.pushEnabled,
                           semanticLabel: '알림 허용',
-                          onChanged: (next) => unawaited(_onPushToggled(profile, next)),
+                          onChanged: (next) => _onPushToggled(profile, next),
                         ),
                       ),
                     ),

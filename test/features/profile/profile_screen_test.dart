@@ -275,11 +275,12 @@ void main() {
     await tester.pump();
     expect(_switchValue(tester), isTrue);
 
-    // 2) 곧바로 끄기 — 이것도 붙잡혀 있다.
+    // 2) 곧바로 끄기 — 첫 요청이 아직 떠 있으므로 새 요청은 나가지 않고
+    // 의도만 갱신된다(직렬화).
     await tester.tap(find.byType(AppSwitch));
     await tester.pump();
     expect(_switchValue(tester), isFalse);
-    expect(repository.updateCalls, hasLength(2));
+    expect(repository.updateCalls, hasLength(1));
 
     // 이제 첫 요청만 실패시킨다.
     repository.updateFailure = const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.');
@@ -291,7 +292,68 @@ void main() {
       isFalse,
       reason: '이미 밀려난 옛 요청의 실패가 최신 결정(끄기)을 되돌려서는 안 된다',
     );
-    expect(find.text('서버에 연결하지 못했습니다.'), findsNothing);
+    expect(
+      find.text('서버에 연결하지 못했습니다.'),
+      findsNothing,
+      reason: '최종 의도(끄기)는 서버 값과 이미 같으므로 사용자에게 실패할 일이 없었다',
+    );
+  });
+
+  testWidgets('토글을 겹쳐 눌러도 서버로는 한 번에 하나씩만 나간다', (tester) async {
+    // 잡아야 할 잘못된 구현: 누를 때마다 곧바로 PATCH를 띄운다 — 응답을
+    // 아무리 잘 걸러도 **서버 도착 순서**를 정할 수 없어, 켜기·끄기가
+    // 뒤바뀌어 닿으면 서버는 켜짐, 화면은 꺼짐으로 끝난다(리뷰 Critical 1의
+    // 역순 성공). 직렬화만이 이걸 막는다.
+    final repository = _RecordingProfileRepository()..gateUpdate = true;
+    await _pumpProfile(tester, repository: repository, pushEnabled: false);
+
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+
+    expect(
+      repository.updateCalls,
+      hasLength(1),
+      reason: '첫 요청이 아직 떠 있는 동안에는 두 번째 요청을 보내지 않는다',
+    );
+    expect(repository.updateCalls.single.pushEnabled, isTrue);
+    expect(_switchValue(tester), isTrue, reason: '화면은 낙관적으로 최신 의도를 보여준다');
+  });
+
+  testWidgets('겹쳐 누른 토글이 둘 다 실패하면 화면이 서버가 확인해 준 값으로 돌아간다', (tester) async {
+    // 잡아야 할 잘못된 구현: 되돌릴 값을 **눌린 시점의 화면 값**에서 잡는다.
+    // 그 값은 앞선 토글이 이미 낙관적으로 써 넣은 것이라 확인된 적이 없다.
+    // 켜기·끄기를 연달아 누르고 둘 다 실패하면 화면은 켜짐, 서버는 꺼짐으로
+    // 갈라진다 — 낙관적 UI가 거짓말을 한다(리뷰 Critical 1).
+    final repository = _RecordingProfileRepository()..gateUpdate = true;
+    await _pumpProfile(tester, repository: repository, pushEnabled: false);
+
+    // 켜기 → 끄기 → 켜기. 최종 의도는 '켜기'이고 서버가 확인해 준 값은 없다.
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    expect(_switchValue(tester), isTrue);
+
+    repository.updateFailure = const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.');
+    repository.releaseUpdate();
+    await tester.pumpAndSettle();
+
+    expect(
+      _switchValue(tester),
+      isFalse,
+      reason: '서버가 확인해 준 값은 처음의 false뿐이다 — 낙관적 값으로 되돌리면 안 된다',
+    );
+    expect(
+      find.text('서버에 연결하지 못했습니다.'),
+      findsOneWidget,
+      reason: '최종 의도(켜기)가 반영되지 못했으므로 사용자에게 알려야 한다',
+    );
   });
 
   testWidgets('로그아웃은 확인 팝업을 먼저 띄우고, 취소하면 signOut을 부르지 않는다', (tester) async {
@@ -410,5 +472,42 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(PasswordChangePopupContent), findsNothing);
+  });
+
+  testWidgets('숨겨진 마이 탭은 토글 실패 토스트를 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 실패하면 `_visible`을 보지 않고 그냥 토스트를
+    // 띄운다. `StatefulShellRoute.indexedStack`은 숨은 브랜치를 dispose하지
+    // 않아 `mounted`가 계속 참이고, `AppShell`은 `navigationShell` 위에
+    // `Scaffold`를 하나만 두므로 그 `SnackBar`는 **사용자가 지금 보고 있는
+    // 다른 탭 위에** 뜬다(리뷰 Critical 2). 홈 화면은 같은 경로를 이미
+    // 막아 두었다.
+    final repository = _RecordingProfileRepository()..gateUpdate = true;
+    final harness = await _pumpProfile(
+      tester,
+      repository: repository,
+      pushEnabled: false,
+    );
+
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    expect(repository.updateCalls, hasLength(1));
+
+    // 응답이 오기 전에 다른 탭으로 옮긴다.
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+
+    repository.updateFailure = const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.');
+    repository.releaseUpdate();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('서버에 연결하지 못했습니다.'),
+      findsNothing,
+      reason: '숨은 화면이 다른 탭 위로 토스트를 쏘면 안 된다',
+    );
+    // 되돌리기 자체는 전역 세션 상태라 숨은 동안에도 반영돼야 한다 —
+    // 사용자가 마이 탭으로 돌아왔을 때 서버와 같은 값을 봐야 한다.
+    final session = harness.container.read(sessionControllerProvider).value;
+    expect((session as SessionReady).profile.pushEnabled, isFalse);
   });
 }
