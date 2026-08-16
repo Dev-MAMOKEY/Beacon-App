@@ -550,6 +550,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return routes;
   }
 
+  /// 홈 탭이 실제로 보일 때만 토스트를 띄운다.
+  ///
+  /// `showAppToast`는 `AppShell`이 `navigationShell` 위에 하나만 두는 공유
+  /// `ScaffoldMessenger`를 잡는다 — 숨은 브랜치가 띄운 토스트는 **사용자가
+  /// 지금 보고 있는 탭 위에** 뜬다. 마이페이지는 이미 같은 가드를 두고
+  /// 있었는데 홈에만 없었다(리뷰 Important 2).
+  void _showToastIfVisible(String message) {
+    if (!_visible) return;
+    showAppToast(context, message);
+  }
+
   void _removeRoutes(List<Route<void>> routes) {
     for (final route in routes) {
       if (route.isActive) _rootNavigator.removeRoute(route);
@@ -665,7 +676,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       // 않은 비동기 오류가 된다(리뷰 Important 4).
       if (!mounted || !isLatest()) return;
       _codeEntryState.update(submitting: false, needsManualRetry: true);
-      showAppToast(context, '출석 처리에 실패했습니다. 다시 시도해주세요.');
+      _showToastIfVisible('출석 처리에 실패했습니다. 다시 시도해주세요.');
       return;
     }
 
@@ -681,19 +692,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         // 않으면 아래에서 여는 출석완료 팝업이 이미 떠 있는 코드 입력
         // 팝업 위에 겹쳐 쌓인다.
         _syncPopups();
-        _pushOwnedRoute(
-          buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
-        );
+        // `_syncPopups`는 `_visible`을 보지만 이 push는 보지 않았다 — 응답이
+        // 도착할 때 홈이 숨겨져 있으면 전체 스크림을 가진 모달 완료 팝업이
+        // **사용자가 지금 보고 있는 다른 탭 위에** 뜬다. 홈은 이미 숨겨져
+        // 있어 `_onBecameHidden`이 다시 불리지 않고 `_onBecameVisible`도
+        // 소유 라우트를 닫지 않으므로, 확인을 누르기 전엔 앱을 되찾을 수
+        // 없었다(리뷰 Important 1).
+        //
+        // 상태(`_checkedInSessionId`)는 위에서 이미 반영했다 — 숨겨졌다는
+        // 이유로 서버가 인정한 출석을 잊으면 돌아왔을 때 중복 제출을 부른다.
+        // 감추는 것은 알림뿐이고, 돌아오면 본문이 "출석이 완료되었습니다"로
+        // 알려준다.
+        if (_visible) {
+          _pushOwnedRoute(
+            buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
+          );
+        }
       case CheckInInvalidCode():
         _otpController.shake();
         _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _checkedInSessionId = session.sessionId);
         _syncPopups();
-        showAppToast(context, '이미 출석 처리되었습니다');
+        _showToastIfVisible('이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
         _codeEntryState.update(needsManualRetry: true);
-        showAppToast(context, message);
+        _showToastIfVisible(message);
     }
   }
 

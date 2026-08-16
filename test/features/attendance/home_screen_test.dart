@@ -1040,6 +1040,78 @@ void main() {
     _expectNoLeftoverPopupRoute(routes);
   });
 
+  testWidgets('응답이 도착할 때 홈이 숨겨져 있으면 완료 팝업을 다른 탭 위로 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `_syncPopups`에만 `_visible` 가드를 두고 완료
+    // 팝업 push에는 두지 않는다. 기존 가시성 테스트는 전부 **비콘 이벤트
+    // 시점**에 발동하므로, **응답 완료 시점** 경로는 어떤 테스트도 지나가지
+    // 않았다. 그 결과 전체 스크림을 가진 모달이 사용자가 보고 있는 탭 위에
+    // 뜨고, 홈은 이미 숨겨져 `_onBecameHidden`이 다시 불리지 않으므로
+    // 확인을 누르기 전엔 앱을 되찾을 수 없다(리뷰 Important 1).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present)
+      ..gate = gate;
+    final (container: _, :routes, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    // 응답이 오기 전에 다른 탭으로 옮긴다.
+    visible.value = false;
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석 완료!'), findsNothing, reason: '숨은 홈이 다른 탭 위로 모달을 띄우면 안 된다');
+    _expectNoLeftoverPopupRoute(routes);
+    // 서버가 인정한 출석은 잊으면 안 된다 — 돌아왔을 때 중복 제출을 부른다.
+    visible.value = true;
+    await tester.pumpAndSettle();
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '이미 출석한 세션이다');
+    expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
+  });
+
+  testWidgets('응답이 도착할 때 홈이 숨겨져 있으면 실패 토스트도 띄우지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 홈의 토스트 호출부에 `_visible` 가드가 없다.
+    // `showAppToast`는 `AppShell`의 공유 `ScaffoldMessenger`를 잡으므로 숨은
+    // 브랜치가 띄운 토스트가 지금 보이는 탭 위에 뜬다. 마이페이지는 이미
+    // 같은 가드를 두고 있었다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..gate = gate;
+    final (container: _, routes: _, :visible) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    visible.value = false;
+    await tester.pumpAndSettle();
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsNothing, reason: '숨은 홈이 다른 탭 위로 토스트를 쏘면 안 된다');
+  });
+
   testWidgets('잠깐 포커스를 잃은 것(inactive)만으로는 스캔도 입력도 잃지 않는다', (tester) async {
     // 잡아야 할 잘못된 구현: `inactive`를 백그라운드로 친다. `inactive`는
     // 제어센터·알림 그림자·시스템 다이얼로그처럼 **ranging이 멈추지 않는**
