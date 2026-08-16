@@ -11,6 +11,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
     required this.body1,
     required this.body2,
     required this.body3,
+    required this.body4,
     required this.number1,
   });
 
@@ -21,6 +22,12 @@ class AppTypography extends ThemeExtension<AppTypography> {
   final TextStyle body1;
   final TextStyle body2;
   final TextStyle body3;
+
+  /// Figma 스타일 `body4`(12/Medium/자간 0.6). 마이페이지(#13) 리스트 카드의
+  /// 부제(`353:1577`·`353:1716`)가 처음 쓴다 — 그 전까지 12px 스타일을 쓰는
+  /// 화면이 없어 토큰에도 없었다.
+  final TextStyle body4;
+
   final TextStyle number1;
 
   static const String _pretendard = 'Pretendard';
@@ -72,6 +79,13 @@ class AppTypography extends ThemeExtension<AppTypography> {
       fontWeight: FontWeight.w500,
       height: 1,
     ),
+    body4: TextStyle(
+      fontFamily: _pretendard,
+      fontSize: 12,
+      fontWeight: FontWeight.w500,
+      height: 1,
+      letterSpacing: 0.6,
+    ),
     number1: TextStyle(
       fontFamily: _manrope,
       fontSize: 50,
@@ -89,6 +103,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
     TextStyle? body1,
     TextStyle? body2,
     TextStyle? body3,
+    TextStyle? body4,
     TextStyle? number1,
   }) {
     return AppTypography(
@@ -99,6 +114,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
       body1: body1 ?? this.body1,
       body2: body2 ?? this.body2,
       body3: body3 ?? this.body3,
+      body4: body4 ?? this.body4,
       number1: number1 ?? this.number1,
     );
   }
@@ -114,6 +130,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
       body1: TextStyle.lerp(body1, other.body1, t)!,
       body2: TextStyle.lerp(body2, other.body2, t)!,
       body3: TextStyle.lerp(body3, other.body3, t)!,
+      body4: TextStyle.lerp(body4, other.body4, t)!,
       number1: TextStyle.lerp(number1, other.number1, t)!,
     );
   }

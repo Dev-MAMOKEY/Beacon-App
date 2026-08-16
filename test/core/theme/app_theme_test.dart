@@ -26,7 +26,49 @@ final _colorFields = <String, (Color Function(AppColors), AppColors Function(App
   'attendanceLate': ((c) => c.attendanceLate, (c, v) => c.copyWith(attendanceLate: v)),
   'attendanceAbsent': ((c) => c.attendanceAbsent, (c, v) => c.copyWith(attendanceAbsent: v)),
   'attendanceEtc': ((c) => c.attendanceEtc, (c, v) => c.copyWith(attendanceEtc: v)),
+  'iconBadge': ((c) => c.iconBadge, (c, v) => c.copyWith(iconBadge: v)),
 };
+
+/// `AppTypography`의 모든 필드를 읽고 쓰는 표. [_colorFields]와 같은 이유로
+/// 필드를 추가하면 여기에도 한 줄 추가해야 한다.
+final _textFields =
+    <String, (TextStyle Function(AppTypography), AppTypography Function(AppTypography, TextStyle))>{
+  'title3': ((t) => t.title3, (t, v) => t.copyWith(title3: v)),
+  'title4': ((t) => t.title4, (t, v) => t.copyWith(title4: v)),
+  'title6': ((t) => t.title6, (t, v) => t.copyWith(title6: v)),
+  'title7': ((t) => t.title7, (t, v) => t.copyWith(title7: v)),
+  'body1': ((t) => t.body1, (t, v) => t.copyWith(body1: v)),
+  'body2': ((t) => t.body2, (t, v) => t.copyWith(body2: v)),
+  'body3': ((t) => t.body3, (t, v) => t.copyWith(body3: v)),
+  'body4': ((t) => t.body4, (t, v) => t.copyWith(body4: v)),
+  'number1': ((t) => t.number1, (t, v) => t.copyWith(number1: v)),
+};
+
+const _textSentinel = TextStyle(fontFamily: 'Sentinel', fontSize: 99, letterSpacing: 3.25);
+
+/// 필드 값이 전부 다른 타이포 기준값. `AppTypography.standard`를 기준으로
+/// 쓰면 안 되는 이유는 [_distinctColors]와 같다 — 실제로 `body2`와 `title6`은
+/// 크기(16)가 같고 `body3`와 `title7`도 크기(14)가 같아, 그 쌍 사이의
+/// 오배선은 표준값으로는 절대 드러나지 않는다.
+AppTypography _distinctTypography() {
+  var seed = 0;
+  TextStyle next() {
+    seed++;
+    return TextStyle(fontFamily: 'Distinct$seed', fontSize: seed.toDouble());
+  }
+
+  return AppTypography(
+    title3: next(),
+    title4: next(),
+    title6: next(),
+    title7: next(),
+    body1: next(),
+    body2: next(),
+    body3: next(),
+    body4: next(),
+    number1: next(),
+  );
+}
 
 const _sentinel = Color(0xFFDEADBE);
 
@@ -43,7 +85,7 @@ AppColors _distinctColors() {
   var seed = 0;
   Color next() {
     seed++;
-    // 1..17에 대해 전부 다른 값이고 _sentinel과도 겹치지 않는다.
+    // 1..18에 대해 전부 다른 값이고 _sentinel과도 겹치지 않는다.
     return Color(0xFF000000 | (seed * 0x010203));
   }
 
@@ -65,6 +107,7 @@ AppColors _distinctColors() {
     attendanceLate: next(),
     attendanceAbsent: next(),
     attendanceEtc: next(),
+    iconBadge: next(),
   );
 }
 
@@ -163,7 +206,7 @@ void main() {
     final original = _distinctColors();
     const sentinel = _sentinel;
 
-    expect(_colorFields, hasLength(17), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
+    expect(_colorFields, hasLength(18), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
 
     for (final entry in _colorFields.entries) {
       final (read, copy) = entry.value;
@@ -227,7 +270,7 @@ void main() {
     final original = _distinctColors();
     const sentinel = _sentinel;
 
-    expect(_colorFields, hasLength(17), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
+    expect(_colorFields, hasLength(18), reason: 'AppColors에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
 
     for (final entry in _colorFields.entries) {
       final (read, copy) = entry.value;
@@ -251,18 +294,89 @@ void main() {
     }
   });
 
-  test('AppTypography.copyWith()는 인자가 없으면 모든 스타일을 그대로 유지한다', () {
-    const original = AppTypography.standard;
-    final copy = original.copyWith();
+  // 이전 버전은 `original.copyWith()`를 인자 **하나도 없이** 부르고 모든
+  // 스타일이 그대로인지만 봤다 — `AppColors`쪽에서 이미 확인된 것과 똑같은
+  // 실명이다. 새 필드(`body4`)를 copyWith 시그니처에서 통째로 빼고 본문이
+  // 항상 `this.body4`를 쓰게 만들어도 그 테스트는 초록색이었다. 필드마다
+  // 실제로 값을 넘겨봐야 "인자가 그 필드에 도달하는가"를 증명할 수 있다.
+  test('AppTypography.copyWith()는 넘긴 필드만 바꾸고 나머지는 전부 유지한다', () {
+    // 잡아야 할 잘못된 구현:
+    // 1) 새 스타일을 필드로만 추가하고 copyWith 인자에서 빠뜨린다.
+    // 2) 복붙 오배선(`body4: body4 ?? this.body3`) — 한 스타일을 바꿨는데
+    //    다른 스타일까지 따라 바뀐다.
+    final original = _distinctTypography();
 
-    expect(copy.title3, original.title3);
-    expect(copy.title4, original.title4);
-    expect(copy.title6, original.title6);
-    expect(copy.title7, original.title7);
-    expect(copy.body1, original.body1);
-    expect(copy.body2, original.body2);
-    expect(copy.body3, original.body3);
-    expect(copy.number1, original.number1);
+    expect(_textFields, hasLength(9), reason: 'AppTypography에 필드를 추가하면 이 맵과 개수를 함께 갱신해야 한다');
+
+    for (final entry in _textFields.entries) {
+      final (read, copy) = entry.value;
+      final mutated = copy(original, _textSentinel);
+
+      expect(read(mutated), _textSentinel, reason: '${entry.key}에 넘긴 값이 실제로 반영돼야 한다');
+
+      for (final other in _textFields.entries) {
+        if (other.key == entry.key) continue;
+        expect(
+          other.value.$1(mutated),
+          other.value.$1(original),
+          reason: '${entry.key}만 바꿨는데 ${other.key}까지 바뀌었다',
+        );
+      }
+    }
+
+    final untouched = original.copyWith();
+    for (final entry in _textFields.entries) {
+      expect(entry.value.$1(untouched), entry.value.$1(original), reason: entry.key);
+    }
+  });
+
+  // `lerp`는 생성자 인자가 전부 required라 필드를 "빠뜨릴" 수는 없지만
+  // 복붙 오배선은 그대로 가능하다(`AppColors.lerp`와 같은 이유).
+  test('AppTypography.lerp(t=1)은 필드마다 상대의 같은 필드 값을 가져온다', () {
+    // 잡아야 할 잘못된 구현: lerp 본문에서 필드를 잘못 배선한다 —
+    // `body4: TextStyle.lerp(body3, other.body3, t)` 같은 복붙 실수.
+    final original = _distinctTypography();
+
+    for (final entry in _textFields.entries) {
+      final (read, copy) = entry.value;
+      final blended = original.lerp(copy(original, _textSentinel), 1);
+
+      expect(
+        read(blended).fontFamily,
+        _textSentinel.fontFamily,
+        reason: 't=1에서 ${entry.key}는 상대의 ${entry.key} 값이어야 한다',
+      );
+
+      for (final other in _textFields.entries) {
+        if (other.key == entry.key) continue;
+        expect(
+          other.value.$1(blended).fontFamily,
+          other.value.$1(original).fontFamily,
+          reason: '${entry.key}만 다른 상대와 섞었는데 ${other.key}까지 바뀌었다',
+        );
+      }
+    }
+  });
+
+  // Figma 스타일 `body4`(12/Medium/자간 0.6) 실측값. 위젯 테스트가
+  // "부제는 body4로 그린다"만 확인해서는 고정되지 않는다 — 토큰 자체가
+  // 엉뚱한 값이어도 위젯은 그 값을 충실히 쓰기 때문이다.
+  test('body4는 Figma 실측값(12/Medium/자간 0.6)이다', () {
+    // 잡아야 할 잘못된 구현: 가장 가까운 기존 토큰(body3, 14px)을 복사해
+    // 크기만 안 고치거나, 자간 0.6을 빠뜨린다.
+    final body4 = AppTypography.standard.body4;
+    expect(body4.fontFamily, 'Pretendard');
+    expect(body4.fontSize, 12);
+    expect(body4.fontWeight, FontWeight.w500);
+    expect(body4.letterSpacing, 0.6);
+  });
+
+  test('iconBadge는 Figma 실측값(#E9F4FF)이고 bg와 다른 색이다', () {
+    // 잡아야 할 잘못된 구현: 눈대중으로 비슷한 기존 토큰(bg #EEF7FF)을
+    // 그대로 쓴다 — 두 값은 실제로 다르다.
+    const colors = AppColors.light;
+    expect(colors.iconBadge, const Color(0xFFE9F4FF));
+    expect(colors.iconBadge, isNot(colors.bg));
   });
 
   testWidgets('Theme.of(context).extension()으로 위젯 트리에서 토큰에 접근할 수 있다', (

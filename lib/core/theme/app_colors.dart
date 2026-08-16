@@ -22,6 +22,7 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.attendanceLate,
     required this.attendanceAbsent,
     required this.attendanceEtc,
+    required this.iconBadge,
   });
 
   final Color main;
@@ -69,6 +70,12 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color attendanceAbsent;
   final Color attendanceEtc;
 
+  /// 마이페이지(#13) 리스트 카드의 아이콘 배지 배경. Figma `353:1692`·
+  /// `353:1711` "Background" 실측 `#E9F4FF` — [bg](`#EEF7FF`)와 비슷하지만
+  /// 다른 값이고 Figma 변수 목록에는 없어, [disconnectedGlow]·[scrim]과 같은
+  /// 이유로 토큰으로 승격한다(값 자체는 Figma에서 그대로 뽑았다).
+  final Color iconBadge;
+
   static const AppColors light = AppColors(
     main: Color(0xFF54A2EA),
     bg: Color(0xFFEEF7FF),
@@ -87,6 +94,7 @@ class AppColors extends ThemeExtension<AppColors> {
     attendanceLate: Color(0xFFFDD97C),
     attendanceAbsent: Color(0xFFFF9797),
     attendanceEtc: Color(0xFFE7E8E9),
+    iconBadge: Color(0xFFE9F4FF),
   );
 
   @override
@@ -108,6 +116,7 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? attendanceLate,
     Color? attendanceAbsent,
     Color? attendanceEtc,
+    Color? iconBadge,
   }) {
     return AppColors(
       main: main ?? this.main,
@@ -127,6 +136,7 @@ class AppColors extends ThemeExtension<AppColors> {
       attendanceLate: attendanceLate ?? this.attendanceLate,
       attendanceAbsent: attendanceAbsent ?? this.attendanceAbsent,
       attendanceEtc: attendanceEtc ?? this.attendanceEtc,
+      iconBadge: iconBadge ?? this.iconBadge,
     );
   }
 
@@ -151,6 +161,7 @@ class AppColors extends ThemeExtension<AppColors> {
       attendanceLate: Color.lerp(attendanceLate, other.attendanceLate, t)!,
       attendanceAbsent: Color.lerp(attendanceAbsent, other.attendanceAbsent, t)!,
       attendanceEtc: Color.lerp(attendanceEtc, other.attendanceEtc, t)!,
+      iconBadge: Color.lerp(iconBadge, other.iconBadge, t)!,
     );
   }
 }
