@@ -18,6 +18,10 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.disconnectedGlow,
     required this.scrim,
     required this.label,
+    required this.attendancePresent,
+    required this.attendanceLate,
+    required this.attendanceAbsent,
+    required this.attendanceEtc,
   });
 
   final Color main;
@@ -49,6 +53,22 @@ class AppColors extends ThemeExtension<AppColors> {
 
   final Color label;
 
+  /// 기록 캘린더(#12)의 날짜 배지 4종. Figma 컴포넌트 "날짜"(`289:2875`)의
+  /// variant 배경을 그대로 옮긴 값이다 — 출석 `#91CAFF`(`289:2876`), 지각
+  /// `#FDD97C`(`289:2878`), 결석 `#FF9797`(`289:2880`).
+  ///
+  /// [attendanceEtc]만 Figma에 없다. 그 컴포넌트의 네 번째 variant "기본"
+  /// (`289:2882`)은 배경이 아예 없는(투명) 상태이고, 캘린더에서는 "그 날짜에
+  /// 기록이 없음"을 뜻한다 — `AttendanceStatus.etc`(관리자가 수동으로 남기는
+  /// 상태)와는 다른 개념이다. `etc`용 색은 사용자 판정으로 [gray4]와 같은
+  /// 값을 쓴다. 값이 같아도 별도 토큰으로 두는 이유는 의미가 다르기
+  /// 때문이다 — gray4는 구분선·비활성 배경이고 이건 출석 상태색이라,
+  /// 나중에 Figma가 "기타" variant를 실제로 정의하면 여기만 바뀐다.
+  final Color attendancePresent;
+  final Color attendanceLate;
+  final Color attendanceAbsent;
+  final Color attendanceEtc;
+
   static const AppColors light = AppColors(
     main: Color(0xFF54A2EA),
     bg: Color(0xFFEEF7FF),
@@ -63,6 +83,10 @@ class AppColors extends ThemeExtension<AppColors> {
     disconnectedGlow: Color(0xFF94A8BD),
     scrim: Color(0x66000000),
     label: Color(0xFF000000),
+    attendancePresent: Color(0xFF91CAFF),
+    attendanceLate: Color(0xFFFDD97C),
+    attendanceAbsent: Color(0xFFFF9797),
+    attendanceEtc: Color(0xFFE7E8E9),
   );
 
   @override
@@ -80,6 +104,10 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? disconnectedGlow,
     Color? scrim,
     Color? label,
+    Color? attendancePresent,
+    Color? attendanceLate,
+    Color? attendanceAbsent,
+    Color? attendanceEtc,
   }) {
     return AppColors(
       main: main ?? this.main,
@@ -95,6 +123,10 @@ class AppColors extends ThemeExtension<AppColors> {
       disconnectedGlow: disconnectedGlow ?? this.disconnectedGlow,
       scrim: scrim ?? this.scrim,
       label: label ?? this.label,
+      attendancePresent: attendancePresent ?? this.attendancePresent,
+      attendanceLate: attendanceLate ?? this.attendanceLate,
+      attendanceAbsent: attendanceAbsent ?? this.attendanceAbsent,
+      attendanceEtc: attendanceEtc ?? this.attendanceEtc,
     );
   }
 
@@ -115,6 +147,10 @@ class AppColors extends ThemeExtension<AppColors> {
       disconnectedGlow: Color.lerp(disconnectedGlow, other.disconnectedGlow, t)!,
       scrim: Color.lerp(scrim, other.scrim, t)!,
       label: Color.lerp(label, other.label, t)!,
+      attendancePresent: Color.lerp(attendancePresent, other.attendancePresent, t)!,
+      attendanceLate: Color.lerp(attendanceLate, other.attendanceLate, t)!,
+      attendanceAbsent: Color.lerp(attendanceAbsent, other.attendanceAbsent, t)!,
+      attendanceEtc: Color.lerp(attendanceEtc, other.attendanceEtc, t)!,
     );
   }
 }
