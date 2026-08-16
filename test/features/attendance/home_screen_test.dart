@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:beacon_app/components/ui/button.dart';
 import 'package:beacon_app/components/ui/otp_input.dart';
+import 'package:beacon_app/components/ui/popup.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
@@ -1104,7 +1105,15 @@ void main() {
     await _enterOtp(tester, '1234');
     await tester.pumpAndSettle();
 
-    expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
+    // **`find.text`만으로는 어디에 그려졌는지 알 수 없다.** 오류 문구를 홈
+    // 본문(스크림 **아래**)에 그리는 구현도 그 검사를 통과한다 — 리뷰에서
+    // 실제로 그 변이가 405개를 전부 통과했고, 그게 바로 이 수정이 막으려던
+    // 버그다. 팝업 카드의 자손인지까지 봐야 한다.
+    expect(
+      find.descendant(of: find.byType(AppPopupCard), matching: find.text('서버에 연결하지 못했습니다.')),
+      findsOneWidget,
+      reason: '스크림 위(팝업 안)에 그려져야 한다',
+    );
     expect(find.byType(SnackBar), findsNothing, reason: '스크림 아래로 가려질 자리에 띄우면 안 된다');
     // 팝업이 아직 열려 있는 상태여야 이 검사가 의미를 갖는다 — 팝업이
     // 닫혀 있었다면 토스트를 써도 가려지지 않는다.
@@ -1131,9 +1140,59 @@ void main() {
     await _enterOtp(tester, '1234');
     await tester.pumpAndSettle();
 
-    expect(find.text('출석 처리에 실패했습니다. 다시 시도해주세요.'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AppPopupCard),
+        matching: find.text('출석 처리에 실패했습니다. 다시 시도해주세요.'),
+      ),
+      findsOneWidget,
+      reason: '스크림 위(팝업 안)에 그려져야 한다',
+    );
     expect(find.byType(SnackBar), findsNothing, reason: '스크림 아래로 가려질 자리에 띄우면 안 된다');
+    // `routes.stack`만으로는 **어느** 팝업인지 알 수 없다 — 코드 팝업이 닫히고
+    // 블루투스 팝업이 열린 구현도 통과한다(리뷰 Minor 3).
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '코드 입력 팝업이 떠 있어야 한다');
     expect(routes.stack, hasLength(2), reason: '스크림을 깐 팝업 라우트가 살아 있다');
+  });
+
+  testWidgets('요청 중에 팝업이 닫히면 메시지를 토스트로 돌린다', (tester) async {
+    // 잡아야 할 잘못된 구현: 메시지를 **항상** 팝업 안에 적는다. 요청이 도는
+    // 사이에 범위를 벗어나면 `_codeConditionRaw`가 거짓이 돼 `_syncPopups`가
+    // 팝업을 닫는데, 그러면 메시지가 죽은 `_CodeEntryState`로 들어가
+    // **아무 데도 보이지 않는다** — 재시도 버튼도 그 팝업 안이라 함께
+    // 사라진다. 수정 전(develop)에는 최소한 토스트라도 보였다(리뷰 Important 1).
+    final scanner = FakeBeaconScanner();
+    final gate = Completer<void>();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..results.add(const ApiException(ErrorCode.network, '서버에 연결하지 못했습니다.'))
+      ..gate = gate;
+    final (container: _, :routes, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pump();
+
+    // 요청이 도는 사이에 범위를 벗어난다 — 팝업이 닫힌다.
+    scanner.emit(const BeaconOutOfRange());
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '사전 조건: 팝업이 닫혔다');
+    _expectNoLeftoverPopupRoute(routes);
+
+    gate.complete();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(SnackBar),
+      findsOneWidget,
+      reason: '팝업이 없으면 토스트가 유일하게 보이는 자리다',
+    );
+    expect(find.text('서버에 연결하지 못했습니다.'), findsOneWidget);
   });
 
   testWidgets('재시도하면 이전 오류 메시지가 지워진다', (tester) async {
@@ -1572,7 +1631,15 @@ void main() {
 
     expect(find.byType(AppOtpInput), findsOneWidget);
     expect(find.text('다시 시도'), findsNothing);
-    expect(find.text('비밀번호가 올바르지 않습니다'), findsNothing);
+    // 이 픽스처가 실제로 만드는 문구를 검사해야 한다. 원래는 오답 문구
+    // ('비밀번호가 올바르지 않습니다')를 검사했는데, `ErrorCode.unknown`은
+    // 그 문구를 만들지 않으므로 **이 단언은 늘 참이었다** — 팝업 재개방 시
+    // 오류 문구 초기화를 지워도 통과했다(리뷰 Minor 1).
+    expect(
+      find.text('일시적인 오류'),
+      findsNothing,
+      reason: '다시 열린 팝업이 이전 시도의 오류 문구를 끌고 오면 안 된다',
+    );
   });
 
   // ---------------------------------------------------------------------

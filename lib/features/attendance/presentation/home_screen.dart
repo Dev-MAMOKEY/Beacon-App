@@ -583,6 +583,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     showAppToast(context, message);
   }
 
+  /// 출석 체크 결과 메시지를 **지금 실제로 보이는 자리**에 내보낸다.
+  ///
+  /// 어느 자리가 맞는지는 고정돼 있지 않다 — 요청이 도는 사이에 팝업이
+  /// 닫힐 수 있기 때문이다. 그래서 쓰는 시점에 고른다.
+  ///
+  /// - 코드 입력 팝업이 떠 있으면 **팝업 안**에 적는다. 토스트는 셸
+  ///   `Scaffold` 안에 그려지고 그건 팝업의 `ModalBarrier`(스크림) 아래라
+  ///   가려진다(#42).
+  /// - 팝업이 없으면 **토스트**로 띄운다. 처음엔 무조건 팝업 안에 적었는데,
+  ///   요청 도중 범위 이탈·세션 교체로 팝업이 닫히면 메시지가 죽은
+  ///   `_CodeEntryState`로 들어가 **아무 데도 보이지 않았다** — 재시도 버튼도
+  ///   그 팝업 안에 있어 함께 사라진다(리뷰 Important 1).
+  ///
+  /// 남는 구멍이 하나 있다: 블루투스 꺼짐 팝업이 떠 있으면 그쪽 스크림이
+  /// 토스트를 덮는다. 그 상황에서 사용자가 해야 할 일은 블루투스를 켜는
+  /// 것이고 그 안내는 팝업 자신이 하고 있으므로, 출석 실패 사유를 덧대지
+  /// 않는다.
+  void _reportCheckInMessage(String message) {
+    if (_shownPopup == HomePopupTarget.codeInput) {
+      _codeEntryState.update(errorMessage: message);
+    } else {
+      _showToastIfVisible(message);
+    }
+  }
+
   void _removeRoutes(List<Route<void>> routes) {
     for (final route in routes) {
       if (route.isActive) _rootNavigator.removeRoute(route);
@@ -704,14 +729,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       // 영구히 잠기고, `_onOtpCompleted`가 `unawaited`로 부르므로 처리되지
       // 않은 비동기 오류가 된다(리뷰 Important 4).
       if (!mounted || !isLatest()) return;
-      // 토스트가 아니라 팝업 **안**에 적는다 — 이 시점에 코드 입력 팝업은
-      // 아직 열려 있고(`_codeConditionRaw`가 여전히 참이라 `_syncPopups`가
-      // 불리지도 않는다), 그 스크림이 `SnackBar`를 덮는다.
-      _codeEntryState.update(
-        submitting: false,
-        needsManualRetry: true,
-        errorMessage: '출석 처리에 실패했습니다. 다시 시도해주세요.',
-      );
+      _codeEntryState.update(submitting: false, needsManualRetry: true);
+      _reportCheckInMessage('출석 처리에 실패했습니다. 다시 시도해주세요.');
       return;
     }
 
@@ -748,16 +767,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
       case CheckInInvalidCode():
         _otpController.shake();
-        _codeEntryState.update(errorMessage: '비밀번호가 올바르지 않습니다');
+        _reportCheckInMessage('비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _checkedInSessionId = session.sessionId);
+        // `_syncPopups()`가 팝업을 닫아 줄 것이라고 단정하면 안 된다 — 그
+        // 함수는 대상이 **바뀔 때만** 움직인다(`if (target == _shownPopup)
+        // return;`). 세션이 요청 중에 교체되면 `_attendanceDone`이 새 세션에
+        // 대해 거짓이라 코드 입력 팝업이 그대로 남는다(리뷰 Important 2).
         _syncPopups();
-        _showToastIfVisible('이미 출석 처리되었습니다');
+        _reportCheckInMessage('이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
-        // 같은 이유로 팝업 안에 적는다. 바로 위 `ALREADY_CHECKED_IN` 분기가
-        // 토스트를 쓰는 것은 옳다 — 그쪽은 `_syncPopups()`가 먼저 불려 팝업이
-        // 닫힌 뒤라 스크림이 없다. 이 비대칭이 원래 한 `switch` 안에 있었다.
-        _codeEntryState.update(needsManualRetry: true, errorMessage: message);
+        _codeEntryState.update(needsManualRetry: true);
+        _reportCheckInMessage(message);
     }
   }
 
