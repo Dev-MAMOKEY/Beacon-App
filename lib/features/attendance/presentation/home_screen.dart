@@ -68,18 +68,31 @@ HomePopupTarget resolveHomePopupTarget({
 /// notifier를 `ListenableBuilder`로 직접 구독한다.
 class _CodeEntryState extends ChangeNotifier {
   bool submitting = false;
-  String? invalidCodeMessage;
+
+  /// 팝업 **안**에 그리는 오류 문구.
+  ///
+  /// 원래는 `invalidCodeMessage`라는 이름으로 오답(`INVALID_ATTENDANCE_CODE`)
+  /// 전용이었다. 나머지 실패(네트워크 오류·그 밖의 서버 오류)는 `showAppToast`
+  /// 로 갔는데, 그 `SnackBar`는 셸 `Scaffold` 안에 그려지고 그건 코드 입력
+  /// 팝업이 깐 `ModalBarrier`(`AppColors.scrim`) **아래**다. 팝업이 아직 열려
+  /// 있는 상태에서 부르므로 사용자는 실패 사실만 알고 이유는 끝내 못 봤다
+  /// (리뷰 Important). 그래서 오류 문구 전반을 담는 자리로 넓혔다.
+  ///
+  /// 같은 문제를 `password_change_popup.dart`가 이미 반대 방향으로 풀어 뒀다 —
+  /// 필드 단위가 아닌 오류를 팝업 안 `_formError`로 보낸다.
+  String? errorMessage;
+
   bool needsManualRetry = false;
 
   void update({
     bool? submitting,
-    String? invalidCodeMessage,
-    bool clearInvalidCodeMessage = false,
+    String? errorMessage,
+    bool clearErrorMessage = false,
     bool? needsManualRetry,
   }) {
     if (submitting != null) this.submitting = submitting;
-    if (clearInvalidCodeMessage) this.invalidCodeMessage = null;
-    if (invalidCodeMessage != null) this.invalidCodeMessage = invalidCodeMessage;
+    if (clearErrorMessage) this.errorMessage = null;
+    if (errorMessage != null) this.errorMessage = errorMessage;
     if (needsManualRetry != null) this.needsManualRetry = needsManualRetry;
     notifyListeners();
   }
@@ -352,7 +365,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       if (!mounted) return;
       _codeEntryState.update(
         submitting: false,
-        clearInvalidCodeMessage: true,
+        clearErrorMessage: true,
         needsManualRetry: false,
       );
     });
@@ -610,7 +623,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // 비어 있다.)
     _codeEntryState.update(
       submitting: false,
-      clearInvalidCodeMessage: true,
+      clearErrorMessage: true,
       needsManualRetry: false,
     );
     return _pushOwnedPopup(
@@ -676,7 +689,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // 버튼이 방금 새로 대입된 `_lastOtpCode`로 두 번째 요청을 겹쳐 띄운다.
     _codeEntryState.update(
       submitting: true,
-      clearInvalidCodeMessage: true,
+      clearErrorMessage: true,
       needsManualRetry: false,
     );
 
@@ -691,8 +704,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       // 영구히 잠기고, `_onOtpCompleted`가 `unawaited`로 부르므로 처리되지
       // 않은 비동기 오류가 된다(리뷰 Important 4).
       if (!mounted || !isLatest()) return;
-      _codeEntryState.update(submitting: false, needsManualRetry: true);
-      _showToastIfVisible('출석 처리에 실패했습니다. 다시 시도해주세요.');
+      // 토스트가 아니라 팝업 **안**에 적는다 — 이 시점에 코드 입력 팝업은
+      // 아직 열려 있고(`_codeConditionRaw`가 여전히 참이라 `_syncPopups`가
+      // 불리지도 않는다), 그 스크림이 `SnackBar`를 덮는다.
+      _codeEntryState.update(
+        submitting: false,
+        needsManualRetry: true,
+        errorMessage: '출석 처리에 실패했습니다. 다시 시도해주세요.',
+      );
       return;
     }
 
@@ -729,14 +748,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
       case CheckInInvalidCode():
         _otpController.shake();
-        _codeEntryState.update(invalidCodeMessage: '비밀번호가 올바르지 않습니다');
+        _codeEntryState.update(errorMessage: '비밀번호가 올바르지 않습니다');
       case CheckInAlreadyDone():
         setState(() => _checkedInSessionId = session.sessionId);
         _syncPopups();
         _showToastIfVisible('이미 출석 처리되었습니다');
       case CheckInFailed(:final message):
-        _codeEntryState.update(needsManualRetry: true);
-        _showToastIfVisible(message);
+        // 같은 이유로 팝업 안에 적는다. 바로 위 `ALREADY_CHECKED_IN` 분기가
+        // 토스트를 쓰는 것은 옳다 — 그쪽은 `_syncPopups()`가 먼저 불려 팝업이
+        // 닫힌 뒤라 스크림이 없다. 이 비대칭이 원래 한 `switch` 안에 있었다.
+        _codeEntryState.update(needsManualRetry: true, errorMessage: message);
     }
   }
 
@@ -930,10 +951,10 @@ class _CodeInputPopupContent extends StatelessWidget {
           enabled: !state.submitting,
           onCompleted: onCompleted,
         ),
-        if (state.invalidCodeMessage != null) ...[
+        if (state.errorMessage != null) ...[
           const SizedBox(height: 8),
           Text(
-            state.invalidCodeMessage!,
+            state.errorMessage!,
             textAlign: TextAlign.center,
             style: typography.body3.copyWith(color: colors.red),
           ),
