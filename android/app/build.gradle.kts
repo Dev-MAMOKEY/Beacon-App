@@ -1,11 +1,26 @@
+import java.io.FileInputStream
 import java.net.URI
 import java.net.URISyntaxException
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// 릴리즈 서명 정보. `android/key.properties`는 .gitignore 대상이라 각자 로컬에
+// 만들어 쓴다(양식은 `android/key.properties.example`). 파일이 없으면 null이고,
+// 그 경우 릴리즈 빌드는 디버그 키로 서명된다 — 배포하면 안 되는 산출물이다.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties: Properties? =
+    if (keystorePropertiesFile.exists()) {
+        val loaded = Properties()
+        FileInputStream(keystorePropertiesFile).use { stream -> loaded.load(stream) }
+        loaded
+    } else {
+        null
+    }
 
 // 백엔드 호스트는 어떤 git 추적 파일에도 남기지 않는다. 저장소 루트의 .env가
 // 갖고 있는 API_BASE_URL에서 호스트만 뽑아 network_security_config.template.xml에
@@ -89,11 +104,42 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        // `android/key.properties`가 있을 때만 릴리즈 서명 설정을 만든다.
+        // 그 파일과 키스토어(.jks/.keystore)는 .gitignore 대상이다 — 서명 키가
+        // git에 들어가면 저장소를 보는 누구나 이 앱 이름으로 서명된 APK를
+        // 만들 수 있고, 리포는 public이다.
+        if (keystoreProperties != null) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // key.properties가 있으면 그 키로, 없으면 디버그 키로 서명한다.
+            //
+            // **디버그 키로 서명된 APK는 절대 배포하면 안 된다.** Android는
+            // 앱의 서명 신원을 영구 고정하므로, 디버그 키로 한 번 올리면
+            // 나중에 프로덕션 키로 업데이트를 올릴 수 없다(같은 키를 요구한다).
+            // 그래서 배포용 빌드는 반드시 key.properties가 있는 상태에서 해야
+            // 하고, 아래 경고가 그 사실을 빌드 로그에 남긴다.
+            //
+            // 그럼에도 디버그 폴백을 유지하는 이유: 키 없이도
+            // `flutter run --release`로 성능·크기를 확인할 수 있어야 한다.
+            signingConfig = if (keystoreProperties != null) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "⚠️  android/key.properties가 없어 릴리즈 빌드를 디버그 키로 서명합니다. " +
+                        "이 APK는 배포용이 아닙니다 — android/key.properties.example을 참고하세요."
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

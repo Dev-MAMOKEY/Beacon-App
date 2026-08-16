@@ -32,6 +32,9 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# Gradle이 android/ 아래에도 산출물을 만든다 — 루트 /build/ 규칙에 걸리지 않는다.
+/android/build/
+/android/.gradle/
 
 # Symbolication related
 app.*.symbols
@@ -46,6 +49,12 @@ app.*.map.json
 
 # 환경 변수 — .env.example만 커밋한다
 .env
+
+# 릴리즈 서명 키 — key.properties.example만 커밋한다. 리포가 public이므로
+# 이 값들이 들어가면 누구나 이 앱 이름으로 서명된 APK를 만들 수 있다.
+/android/key.properties
+*.jks
+*.keystore
 
 # .env의 API_BASE_URL 호스트를 빌드 시점에 주입해 생성되는 파일 —
 # android/app/build.gradle.kts의 generateNetworkSecurityConfig 태스크가 만든다.
