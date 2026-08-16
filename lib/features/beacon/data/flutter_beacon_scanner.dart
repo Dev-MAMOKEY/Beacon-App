@@ -332,6 +332,12 @@ class FlutterBeaconScanner implements BeaconScanner {
       unawaited(session.cancelRanging());
       session.streakStart = null;
       session.lastGoodSampleAt = null;
+      // 무장된 만료 타이머도 반드시 함께 취소한다. `isDetected`는 의도적으로
+      // 참으로 남으므로, 남은 타이머가 뒤늦게 발화하면 방금 내보낸
+      // `BeaconBluetoothOff`를 `BeaconOutOfRange`로 덮어써 블루투스 안내
+      // 팝업이 사라진다 — 게다가 위의 `bluetoothOff` 조기 반환 때문에
+      // `BeaconBluetoothOff`는 다시 나오지도 않는다(리뷰 Important 1).
+      session.cancelExpiry();
       session.add(const BeaconBluetoothOff());
     } else if (state == beacon_lib.BluetoothState.stateOn) {
       if (!session.bluetoothOff) return;
@@ -410,6 +416,11 @@ class FlutterBeaconScanner implements BeaconScanner {
         // 이 타이머가 스스로 OutOfRange로 되돌린다.
         session.armExpiry(_createTimer);
       } else {
+        // 아직 안정화 전이다. 여기까지 왔다는 건 방금 좋은 샘플을 받았다는
+        // 뜻이므로, 이전 스트릭이 남긴 만료 타이머가 있으면 취소한다 —
+        // 그러지 않으면 그 타이머가 뒤늦게 발화해 **방금 시작한** 새 스트릭을
+        // 지우고 근거 없는 "범위를 벗어났습니다"를 띄운다(리뷰 Minor 1).
+        session.cancelExpiry();
         session.add(const BeaconScanning());
       }
     } else {

@@ -46,6 +46,10 @@ class _FakeTimer implements Timer {
 
   void fire() {
     if (cancelled) return;
+    // 실제 one-shot `Timer`는 발화하면 더 이상 active가 아니다. 이걸 흉내
+    // 내지 않으면 "발화한 타이머"와 "아직 무장된 타이머"를 하니스가 구별하지
+    // 못한다(리뷰 지적).
+    cancelled = true;
     callback();
   }
 
@@ -66,6 +70,9 @@ class _FakeTimer implements Timer {
 /// 그 취소가 실제로 일어났는지를 `rangingCancelCount`로 관찰한다.
 class _Harness {
   _Harness({
+    /// 참이면 만료 타이머 팩토리를 **주입하지 않는다** — 프로덕션 기본값인
+    /// `Timer.new`가 실제로 도는지 보기 위해서다.
+    this.useRealTimer = false,
     beacon_lib.BluetoothState initialBluetoothState = beacon_lib.BluetoothState.stateOn,
     bool initializeSucceeds = true,
     Future<bool> Function()? initializeOverride,
@@ -108,11 +115,13 @@ class _Harness {
         return true;
       },
       createElapsedClock: _makeElapsedClock,
-      createTimer: (duration, callback) {
-        final timer = _FakeTimer(duration, callback);
-        timers.add(timer);
-        return timer;
-      },
+      createTimer: useRealTimer
+          ? null
+          : (duration, callback) {
+              final timer = _FakeTimer(duration, callback);
+              timers.add(timer);
+              return timer;
+            },
     );
   }
 
@@ -122,6 +131,8 @@ class _Harness {
   /// 바뀐다 — "요청 후 사용자가 승인/거부했다"를 흉내낸다.
   beacon_lib.AuthorizationStatus authorization;
   final beacon_lib.AuthorizationStatus? authorizationAfterRequest;
+
+  final bool useRealTimer;
 
   late final FlutterBeaconScanner scanner;
   // broadcast여야 한다 — 한 하니스가 여러 번 watch()되면(예: region 캐싱
@@ -430,6 +441,69 @@ void main() {
     // `checkIn`은 근접 증거를 담지 않아 서버가 재검증할 수 없으므로 이
     // 만료가 보증의 일부다(리뷰 Critical).
 
+    test('주입 없이도 실제 Timer가 감지를 만료시킨다(프로덕션 기본 경로)', () async {
+      // **이 스위트에서 가장 중요한 테스트다.** 다른 만료 테스트는 전부
+      // `createTimer`를 주입하므로 프로덕션 기본값 `Timer.new`를 한 번도
+      // 지나지 않는다 — 리뷰에서 그 기본값을 `Timer(Duration(days: 365))`로
+      // 바꿔도 스위트 전체가 초록인 것이 확인됐다. 즉 이 수정의 스캐너 절반이
+      // 출시 앱에서 통째로 무력화돼도 테스트는 아무 말도 하지 않았다.
+      //
+      // 실제 시간을 기다려야 하므로 gap을 아주 짧게 준다.
+      final quick = BeaconScanConfig(
+        uuid: _uuid,
+        rssiThreshold: -70,
+        stabilizationSeconds: 1,
+        maxSampleGap: const Duration(milliseconds: 40),
+      );
+      final h = _Harness(useRealTimer: true);
+      await h.start(quick);
+
+      // gap이 40ms이므로 샘플 간격을 그보다 촘촘하게(20ms) 넣어야 스트릭이
+      // 이어진다 — `holdGoodFor`의 1초 스텝은 여기선 쓸 수 없다.
+      h.emitGood(-60);
+      await h.settle();
+      for (var elapsed = Duration.zero; elapsed < const Duration(seconds: 1);) {
+        const step = Duration(milliseconds: 20);
+        h.clock.advance(step);
+        elapsed += step;
+        h.emitGood(-60);
+        await h.settle();
+      }
+      expect(h.states.last, isA<BeaconDetected>());
+
+      // 아무 샘플도 넣지 않고 실제로 기다린다.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await h.settle();
+
+      expect(
+        h.states.last,
+        isA<BeaconOutOfRange>(),
+        reason: '주입된 가짜가 아니라 실제 Timer가 만료를 일으켜야 한다',
+      );
+    });
+
+    test('만료 시간은 config.maxSampleGap을 그대로 쓴다(기본값 하드코딩이 아니다)', () async {
+      // 잡아야 할 잘못된 구현: 만료 시간을 2초로 하드코딩한다. 다른 모든
+      // 스캐너 테스트가 기본 gap(2초)을 쓰므로, 기본값만으로는 config를 읽는
+      // 코드와 상수를 박은 코드를 구별할 수 없다(리뷰 codex).
+      // `BeaconScanConfig`는 릴리즈에서도 살아남는 검증(ArgumentError) 때문에
+      // const 생성자가 아니다.
+      final longGap = BeaconScanConfig(
+        uuid: _uuid,
+        rssiThreshold: -70,
+        stabilizationSeconds: 3,
+        maxSampleGap: const Duration(seconds: 3),
+      );
+      final h = _Harness();
+      await h.start(longGap);
+
+      h.emitGood(-60);
+      await h.settle();
+      await h.holdGoodFor(const Duration(seconds: 3));
+
+      expect(h.liveExpiryTimer!.duration, const Duration(seconds: 3));
+    });
+
     test('감지 후 아무 샘플도 오지 않으면 maxSampleGap 뒤에 OutOfRange가 된다', () async {
       final h = _Harness();
       await h.start(config);
@@ -495,7 +569,16 @@ void main() {
 
       expect(first!.isActive, isFalse, reason: '앞선 시계는 취소돼야 한다');
       expect(second, isNot(same(first)), reason: '샘플마다 시계를 다시 감는다');
+      expect(second!.duration, config.maxSampleGap, reason: '다시 감을 때도 같은 간격이어야 한다');
       expect(h.states.last, isA<BeaconDetected>());
+
+      // **다시 감은 그 타이머가 여전히 만료를 일으키는지**까지 봐야 한다.
+      // 여기까지 검사하지 않으면 교체 타이머에 아무 일도 하지 않는 콜백을
+      // 물려도 통과한다 — 신호가 계속 오다 끊기는 실제 시나리오가 통째로
+      // 검증 밖이 된다(리뷰 codex).
+      second.fire();
+      await h.settle();
+      expect(h.states.last, isA<BeaconOutOfRange>());
     });
 
     test('나쁜 샘플로 범위를 벗어나면 만료 시계를 남기지 않는다', () async {
@@ -514,6 +597,77 @@ void main() {
 
       expect(h.states.last, isA<BeaconOutOfRange>());
       expect(h.liveExpiryTimer, isNull, reason: '판정이 끝났으면 시계를 남기지 않는다');
+    });
+
+    test('빈 프레임·다른 UUID·판독 실패도 똑같이 만료 시계를 지운다', () async {
+      // 잡아야 할 잘못된 구현: 취소를 "같은 UUID이고 임계값 미달"인 경우에만
+      // 건다. 나머지 세 경로(빈 결과, 다른 UUID, 플러그인 결측치 -1)는
+      // OutOfRange를 내면서도 시계를 남겨, 그 시계가 뒤늦게 한 번 더
+      // 상태를 뒤집는다(리뷰 codex).
+      for (final scenario in <(String, void Function(_Harness))>[
+        ('빈 프레임', (h) => h.currentRanging.add(_ranging(const []))),
+        ('다른 UUID', (h) => h.emitGood(-60, uuid: '11111111-2222-3333-4444-555555555555')),
+        ('판독 실패(-1)', (h) => h.emitGood(-1)),
+      ]) {
+        final (label, act) = scenario;
+        final h = _Harness();
+        await h.start(config);
+        h.emitGood(-60);
+        await h.settle();
+        await h.holdGoodFor(const Duration(seconds: 3));
+        expect(h.liveExpiryTimer, isNotNull, reason: '$label: 사전 조건');
+
+        act(h);
+        await h.settle();
+
+        expect(h.states.last, isA<BeaconOutOfRange>(), reason: label);
+        expect(h.liveExpiryTimer, isNull, reason: '$label: 시계를 남기면 안 된다');
+      }
+    });
+
+    test('블루투스가 꺼지면 만료 시계가 BeaconBluetoothOff를 덮어쓰지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 블루투스 꺼짐 전이에서 만료 시계를 취소하지
+      // 않는다. `isDetected`는 의도적으로 참으로 남으므로 남은 시계가
+      // 뒤늦게 발화해 `BeaconOutOfRange`로 덮어쓰고, 그러면 홈 화면의
+      // 블루투스 안내 팝업(설정으로 가는 유일한 통로)이 사라진다. 게다가
+      // 반복 stateOff는 조기 반환이라 다시 나오지도 않는다(리뷰 Important 1).
+      final h = _Harness();
+      await h.start(config);
+      h.emitGood(-60);
+      await h.settle();
+      await h.holdGoodFor(const Duration(seconds: 3));
+      final armed = h.liveExpiryTimer;
+      expect(armed, isNotNull);
+
+      h.bluetoothController.add(beacon_lib.BluetoothState.stateOff);
+      await h.settle();
+      expect(h.states.last, isA<BeaconBluetoothOff>());
+
+      expect(armed!.isActive, isFalse, reason: '꺼짐 전이가 시계를 취소해야 한다');
+      // 설령 남아 있었더라도 상태를 덮어쓰지 않는지까지 본다.
+      armed.fire();
+      await h.settle();
+      expect(
+        h.states.last,
+        isA<BeaconBluetoothOff>(),
+        reason: '블루투스가 꺼진 상태를 범위 이탈로 덮어쓰면 안내 팝업이 사라진다',
+      );
+    });
+
+    test('watch()로 세션이 교체되면 옛 세션의 만료 시계도 취소된다', () async {
+      // 잡아야 할 잘못된 구현: `cancelExpiry()`를 `stop()` 안에만 두고
+      // 공용 `teardown()`에는 넣지 않는다 — 그러면 watch() 교체와
+      // 구독 취소 경로에서 옛 타이머가 살아남는다(리뷰 codex).
+      final h = _Harness();
+      await h.start(config);
+      h.emitGood(-60);
+      await h.settle();
+      await h.holdGoodFor(const Duration(seconds: 3));
+      final stale = h.liveExpiryTimer;
+      expect(stale, isNotNull);
+
+      await h.start(config); // 같은 스캐너에 watch()를 다시 건다
+      expect(stale!.isActive, isFalse);
     });
 
     test('stop()은 만료 시계도 함께 취소한다', () async {

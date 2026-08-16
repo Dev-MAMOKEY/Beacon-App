@@ -1011,19 +1011,21 @@ void main() {
     // (리뷰 Critical).
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+    final (container: _, :routes, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
 
     scanner.emit(const BeaconDetected(-60));
     await tester.pumpAndSettle();
     expect(find.text('출석코드 입력'), findsOneWidget);
     expect(scanner.stopCallCount, 0);
 
+    // 실제 전이 순서 그대로. `hidden`/`paused`부터가 ranging이 멈추는 구간이다.
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    // 팝업 정리는 `addPostFrameCallback`으로 미뤄진다. 생명주기 콜백은
-    // 프레임 파이프라인 **밖**에서 불리므로, 그 콜백이 도는 프레임과 제거가
-    // 트리에 반영되는 프레임을 각각 따로 흘려줘야 한다.
-    await tester.pump();
-    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     await tester.pumpAndSettle();
 
     expect(scanner.stopCallCount, 1, reason: '백그라운드에서는 스캔을 멈춰야 한다');
@@ -1032,6 +1034,39 @@ void main() {
       findsNothing,
       reason: '돌아왔을 때 낡은 감지 상태로 열린 팝업이 남아 있으면 안 된다',
     );
+    // 내용만 지우고 모달 배리어를 남기면 앱이 그대로 막힌다 — 라우트 스택을
+    // 직접 본다. `hidden`/`paused`에서는 프레임이 꺼지므로 팝업 정리를
+    // post-frame 콜백에 맡길 수 없고, 그래서 생명주기 경로는 동기 제거를 쓴다.
+    _expectNoLeftoverPopupRoute(routes);
+  });
+
+  testWidgets('잠깐 포커스를 잃은 것(inactive)만으로는 스캔도 입력도 잃지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `inactive`를 백그라운드로 친다. `inactive`는
+    // 제어센터·알림 그림자·시스템 다이얼로그처럼 **ranging이 멈추지 않는**
+    // 순간에도 오고, 최초 실행의 권한 다이얼로그 자체도 이걸 유발한다.
+    // 그때마다 스캔을 허물면 입력하던 네 자리가 사라지고 안정화를 처음부터
+    // 다시 쌓아야 한다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '12'); // 네 자리 중 두 자리만 입력
+    await tester.pumpAndSettle();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pumpAndSettle();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    expect(scanner.stopCallCount, 0, reason: 'ranging이 멈추지 않는 구간이다');
+    expect(scanner.watchCallCount, 1, reason: '스캔을 다시 걸 이유가 없다');
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '팝업이 유지돼야 한다');
+    final typed = find.byType(TextField).evaluate().map((e) {
+      return (e.widget as TextField).controller!.text;
+    }).join();
+    expect(typed, '12', reason: '입력하던 자리가 사라지면 안 된다');
   });
 
   testWidgets('앱이 돌아오면 스캔을 다시 시작하고 감지 상태를 새로 쌓는다', (tester) async {
@@ -1045,8 +1080,8 @@ void main() {
     await tester.pumpAndSettle();
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-    await tester.pump();
-    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     await tester.pumpAndSettle();
     expect(find.text('비콘을 찾는 중입니다...'), findsOneWidget, reason: '감지 상태를 그대로 믿지 않는다');
 
