@@ -13,6 +13,7 @@ import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
+import '../../../core/time/kst.dart';
 import '../../auth/presentation/session_controller.dart';
 import '../../beacon/data/beacon_config_dto.dart';
 import '../../beacon/data/beacon_config_repository.dart';
@@ -102,7 +103,11 @@ class _CodeEntryState extends ChangeNotifier {
 /// 코드 입력란을 연다. `lib/core/router/app_router.dart`의 `/home` 자리
 /// 표시자를 이 화면으로 교체한다.
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.clock = DateTime.now});
+
+  /// 지금 시각을 주는 함수. 기록 화면과 같은 형태로 주입 가능하게 둔다 —
+  /// KST 경계를 넘는 시각을 테스트가 직접 만들 수 있어야 하기 때문이다.
+  final DateTime Function() clock;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -457,8 +462,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  /// 지금의 **KST 벽시계**. 요약 카드가 조회할 달과 오늘 날짜 라벨이 모두
+  /// 이 값을 기준으로 정해진다.
+  ///
+  /// 기기 시계를 그대로 쓰면 UTC 기기에서 `2026-08-31T20:00Z`(= KST 9월 1일)
+  /// 일 때 **기록 탭은 9월을 열고 홈의 요약 카드는 8월을 조회한다** — 라벨은
+  /// 같은데 가리키는 달이 조용히 다르다. 기록 화면은 이미 `toKst`를 쓰고
+  /// 있었고 홈만 `kst.dart`를 임포트조차 하지 않았다(리뷰 Important).
+  DateTime get _nowKst => toKst(widget.clock());
+
   Future<void> _loadRecords(int clubId, int generation) async {
-    final now = DateTime.now();
+    final now = _nowKst;
     try {
       final records = await ref
           .read(recordsRepositoryProvider)
@@ -823,7 +837,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               // 가운데 정렬로 표시한다.
               Center(
                 child: Text(
-                  _formatTodayLabel(DateTime.now()),
+                  _formatTodayLabel(_nowKst),
                   style: typography.title4.copyWith(color: colors.gray2),
                 ),
               ),

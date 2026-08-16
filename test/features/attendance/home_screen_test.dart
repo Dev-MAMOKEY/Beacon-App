@@ -6,6 +6,7 @@ import 'package:beacon_app/components/ui/popup.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
+import 'package:beacon_app/core/time/kst.dart';
 import 'package:beacon_app/features/attendance/data/attendance_dto.dart';
 import 'package:beacon_app/features/attendance/data/attendance_repository.dart';
 import 'package:beacon_app/features/attendance/presentation/home_screen.dart';
@@ -196,6 +197,30 @@ class _ScriptedAttendanceRepository implements AttendanceRepository {
   }
 }
 
+/// 어떤 (year, month)로 조회됐는지 기록하는 가짜.
+class _RecordingRecordsRepository implements RecordsRepository {
+  final List<(int year, int month)> requested = [];
+
+  @override
+  Future<MonthlyRecords> fetch({
+    required int clubId,
+    required int year,
+    required int month,
+  }) async {
+    requested.add((year, month));
+    return MonthlyRecords(
+      year: year,
+      month: month,
+      records: const [],
+      present: 0,
+      absent: 0,
+      late: 0,
+      etc: 0,
+      attendanceRate: 0,
+    );
+  }
+}
+
 class _EmptyRecordsRepository implements RecordsRepository {
   @override
   Future<MonthlyRecords> fetch({
@@ -259,6 +284,7 @@ _pumpHome(
   required _ScriptedAttendanceRepository attendanceRepository,
   BeaconConfigRepository? beaconConfigRepository,
   RecordsRepository? recordsRepository,
+  DateTime Function()? clock,
   List<Override> extraOverrides = const [],
 }) async {
   final container = ProviderContainer(
@@ -295,7 +321,7 @@ _pumpHome(
           body: ValueListenableBuilder<bool>(
             valueListenable: visible,
             builder: (context, enabled, child) => TickerMode(enabled: enabled, child: child!),
-            child: const HomeScreen(),
+            child: HomeScreen(clock: clock ?? DateTime.now),
           ),
         ),
       ),
@@ -1080,6 +1106,62 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('출석코드 입력'), findsNothing, reason: '이미 출석한 세션이다');
     expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
+  });
+
+  group('KST — 홈과 기록이 같은 달을 가리킨다', () {
+    // 홈은 `kst.dart`를 임포트조차 하지 않고 `DateTime.now()`를 그대로 썼다.
+    // 기록 화면은 정확히 반대로 `toKst(widget.clock())`을 쓰고 그 이유를
+    // 주석과 테스트로 고정해 뒀다. UTC 기기에서 두 화면이 다른 달을
+    // 가리켰다(리뷰 Important).
+    //
+    // **KST 머신에서는 `toLocal()`로 바꿔도 통과하므로** 이 그룹은
+    // `TZ=UTC`에서도 반드시 돌려야 의미가 있다.
+
+    /// KST로는 2026-09-01 05:00이지만 UTC로는 2026-08-31 20:00 — 달이 갈린다.
+    DateTime boundaryClock() => DateTime.utc(2026, 8, 31, 20);
+
+    testWidgets('요약 카드는 KST 기준의 달을 조회한다', (tester) async {
+      // 잡아야 할 잘못된 구현: 기기 시계를 그대로 쓴다 → 8월을 조회한다.
+      final records = _RecordingRecordsRepository();
+      await _pumpHome(
+        tester,
+        scanner: FakeBeaconScanner(),
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        recordsRepository: records,
+        clock: boundaryClock,
+      );
+
+      expect(records.requested, [(2026, 9)]);
+    });
+
+    testWidgets('오늘 날짜 라벨도 KST 기준이다', (tester) async {
+      // 잡아야 할 잘못된 구현: 라벨만 기기 시계를 쓴다 → "2026년 08월 31일".
+      await _pumpHome(
+        tester,
+        scanner: FakeBeaconScanner(),
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        clock: boundaryClock,
+      );
+
+      expect(find.text('2026년 09월 01일'), findsOneWidget);
+      expect(find.text('2026년 08월 31일'), findsNothing);
+    });
+
+    testWidgets('기록 화면과 같은 달을 연다', (tester) async {
+      // 두 화면이 **같은 시각에 대해** 같은 답을 내는지 직접 맞춰 본다 —
+      // 각자 따로 검사하면 한쪽만 고쳤을 때도 통과한다.
+      final homeRecords = _RecordingRecordsRepository();
+      await _pumpHome(
+        tester,
+        scanner: FakeBeaconScanner(),
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        recordsRepository: homeRecords,
+        clock: boundaryClock,
+      );
+
+      final recordsScreenMonth = toKst(boundaryClock());
+      expect(homeRecords.requested.single, (recordsScreenMonth.year, recordsScreenMonth.month));
+    });
   });
 
   testWidgets('서버 오류 메시지는 토스트가 아니라 팝업 안에 보인다', (tester) async {
