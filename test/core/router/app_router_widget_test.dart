@@ -23,6 +23,7 @@ import 'package:beacon_app/features/records/data/records_repository.dart';
 import 'package:beacon_app/features/records/presentation/records_calendar.dart';
 import 'package:beacon_app/features/records/presentation/records_screen.dart';
 import 'package:beacon_app/features/records/presentation/session_detail_sheet.dart';
+import 'package:beacon_app/features/shell/presentation/app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -733,6 +734,44 @@ void main() {
     await tester.pumpAndSettle();
     final restoredOffset = tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
     expect(restoredOffset, scrolledOffset);
+  });
+
+  // shellTitleFor는 셸 빌더가 어떤 형태의 위치 문자열을 넘기든 같은 제목을
+  // 내놓아야 한다. 후보는 셋이다 — `state.uri.toString()`(쿼리 포함),
+  // `state.uri.path`(쿼리 제거), `state.matchedLocation`(매칭된 라우트까지).
+  //
+  // 정확히-일치 switch였을 때는 이 셋이 하위 경로에서 서로 다른 제목을
+  // 내놓았고, 그런데도 `.uri.path`를 `.matchedLocation`으로 바꾸면 스위트
+  // 전체가 초록이었다(리뷰 Important 5) — 하위 라우트가 하나도 없어 세 값이
+  // 오늘은 항상 같기 때문이다. 위젯 테스트로 그 선택을 고정하려 해도
+  // `computeRedirect`가 `readyAllowedLocations`에 없는 자식 경로를
+  // `/home`으로 돌려보내 그 화면에 도달할 수 없다(프로브로 확인).
+  //
+  // 그래서 선택을 고정하는 대신 선택이 무의미해지도록 브랜치 루트 매칭으로
+  // 바꿨고, 이 테스트가 그 성질을 직접 고정한다. 정확히-일치 switch로
+  // 되돌리면 하위 경로 케이스가 빈 문자열을 돌려주며 실패한다.
+  group('shellTitleFor', () {
+    test('하위 경로에서도 브랜치 루트의 제목을 돌려준다', () {
+      expect(shellTitleFor('/profile/detail', memberName: null), '마이페이지');
+      expect(shellTitleFor('/records/2026/08', memberName: null), '기록');
+      expect(shellTitleFor('/admin/settings', memberName: null), '관리자');
+      expect(shellTitleFor('/home/anything', memberName: '김민준'), '김민준');
+    });
+
+    test('쿼리 문자열과 프래그먼트가 붙어도 같은 제목을 돌려준다', () {
+      expect(shellTitleFor('/records?source=notification', memberName: null), '기록');
+      expect(shellTitleFor('/profile#section', memberName: null), '마이페이지');
+      expect(shellTitleFor('/profile/detail?x=1', memberName: null), '마이페이지');
+    });
+
+    test('브랜치 루트 자신도 그대로 동작하고, 모르는 경로는 빈 문자열이다', () {
+      expect(shellTitleFor(AppRoutes.records, memberName: null), '기록');
+      expect(shellTitleFor(AppRoutes.home, memberName: '김민준'), '김민준');
+      // 이름을 모르는 순간에도 홈은 고정 문구로 대체된다.
+      expect(shellTitleFor(AppRoutes.home, memberName: null), '홈');
+      expect(shellTitleFor('/splash', memberName: null), '');
+      expect(shellTitleFor('/', memberName: null), '');
+    });
   });
 
   // AppShell이 상단 바 제목을 state.uri.path가 아니라 .toString()으로
