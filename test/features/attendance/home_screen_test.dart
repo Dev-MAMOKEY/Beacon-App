@@ -1011,7 +1011,7 @@ void main() {
     // (리뷰 Critical).
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+    await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
 
     scanner.emit(const BeaconDetected(-60));
     await tester.pumpAndSettle();
