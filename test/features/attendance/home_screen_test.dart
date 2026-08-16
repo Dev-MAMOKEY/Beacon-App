@@ -58,6 +58,20 @@ const _activeSession = ActiveSession(
   status: 'ACTIVE',
 );
 
+/// 같은 값이라도 **매번 새 인스턴스**를 만든다.
+///
+/// `const ActiveSession(...)`은 Dart가 정규화해 같은 인자면 같은 인스턴스를
+/// 돌려주므로, 객체 동일성으로 키를 잡는 잘못된 구현을 테스트가 구별하지
+/// 못한다. 프로덕션은 HTTP 응답마다 새 DTO를 만든다.
+ActiveSession _freshSession({required int sessionId, required String sessionName}) {
+  return ActiveSession(
+    sessionId: sessionId,
+    sessionName: sessionName,
+    // 상수 접힘을 막아 매 호출이 새 인스턴스가 되게 한다.
+    status: ['ACTIVE'].first,
+  );
+}
+
 /// `SessionController.build()`가 곧장 `SessionReady`를 돌려주게 하는
 /// 테스트 더블 — 토큰 저장소·인증 리포지토리를 전부 배선할 필요 없이
 /// clubId를 곧장 확정할 수 있다.
@@ -237,7 +251,8 @@ void _expectNoLeftoverPopupRoute(_RouteStackObserver routes, {String? reason}) {
   );
 }
 
-Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
+Future<({ProviderContainer container, _RouteStackObserver routes, ValueNotifier<bool> visible})>
+_pumpHome(
   WidgetTester tester, {
   required BeaconScanner scanner,
   required _ScriptedAttendanceRepository attendanceRepository,
@@ -263,13 +278,25 @@ Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
   // 실제 앱에서는 AppShell의 Scaffold 안에서 렌더되므로(app_router.dart),
   // 여기서도 Scaffold로 감싼다 — 그렇지 않으면 AppOtpInput의 TextField가
   // Material 조상을 찾지 못해 예외를 던진다.
+  // `StatefulShellRoute.indexedStack`이 숨은 브랜치를 감싸는 방식 그대로 —
+  // 탭 전환은 dispose가 아니라 TickerMode를 끄는 것이다. 실제 셸을 띄우지
+  // 않고도 "탭을 떠났다 돌아왔다"를 재현할 수 있다.
+  final visible = ValueNotifier<bool>(true);
+  addTearDown(visible.dispose);
+
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
         theme: buildAppTheme(),
         navigatorObservers: [routes],
-        home: const Scaffold(body: HomeScreen()),
+        home: Scaffold(
+          body: ValueListenableBuilder<bool>(
+            valueListenable: visible,
+            builder: (context, enabled, child) => TickerMode(enabled: enabled, child: child!),
+            child: const HomeScreen(),
+          ),
+        ),
       ),
     ),
   );
@@ -278,7 +305,7 @@ Future<({ProviderContainer container, _RouteStackObserver routes})> _pumpHome(
   // 시작, 활성 세션 조회, 기록 조회) 완료까지 흘려보낸다.
   await tester.pumpAndSettle();
 
-  return (container: container, routes: routes);
+  return (container: container, routes: routes, visible: visible);
 }
 
 Future<void> _enterOtp(WidgetTester tester, String code) async {
@@ -416,6 +443,93 @@ void main() {
     expect(repo.checkInArgs.single, (7, 88, '7329'));
   });
 
+  testWidgets('출석한 뒤 다른 세션이 열리면 코드 입력 팝업이 다시 열린다', (tester) async {
+    // 잡아야 할 잘못된 구현: 출석 완료를 화면 단위 `bool`로 들고 클럽 변경
+    // 으로만 푼다. 그러면 오전 세션에 출석한 부원이 오후 세션에는 앱을
+    // 죽이기 전까지 출석할 수 없다(리뷰 Critical 1). 기록 화면은 하루
+    // 여러 세션을 명시적으로 모델링하므로 두 기능이 서로 모순된다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+
+    // 완료 팝업을 닫는다.
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+    expect(find.text('출석코드 입력'), findsNothing, reason: '같은 세션에 다시 열려서는 안 된다');
+
+    // 관리자가 **다른** 세션을 시작한다. 이름은 **일부러 같게** 둔다 —
+    // 동아리가 '정기모임'을 하루 두 번 여는 것이 바로 이 수정이 존재하는
+    // 이유이고, 이름으로 키를 잡는 구현은 그 경우 원래 결함을 그대로
+    // 재현하면서도 테스트는 초록으로 남는다(리뷰 Important 1).
+    repo.activeSession = const ActiveSession(
+      sessionId: 99,
+      sessionName: '정기모임',
+      status: 'ACTIVE',
+    );
+    repo.results.add(AttendanceStatus.present);
+
+    // 탭을 떠났다 돌아오면 활성 세션을 다시 조회한다.
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+    harness.visible.value = true;
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsOneWidget, reason: '다른 세션에는 다시 출석할 수 있어야 한다');
+    // 팝업 뒤의 본문도 함께 갱신돼야 한다 — 한쪽 읽기 지점만 고치면 화면이
+    // "출석이 완료되었습니다"라고 말하면서 동시에 코드를 요구한다
+    // (리뷰 Important 3).
+    expect(
+      find.text('오늘 출석이 완료되었습니다'),
+      findsNothing,
+      reason: '아직 출석하지 않은 세션인데 완료 문구가 남아 있으면 안 된다',
+    );
+  });
+
+  testWidgets('같은 세션이 그대로면 재방문해도 코드 입력 팝업이 열리지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 래치를 아예 없애거나 재방문마다 초기화한다 —
+    // 그러면 이미 출석한 세션에 대해 입력란이 계속 열려 중복 제출을 부른다.
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final harness = await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    // 세션 id는 그대로(88)지만 **새 인스턴스**로 교체한다 — 프로덕션은 응답
+    // 마다 새 DTO를 만들므로, 객체 동일성으로 키를 잡는 구현은 같은 세션을
+    // 다시 조회하는 순간 팝업을 다시 열어 중복 제출을 부른다(리뷰 codex).
+    //
+    // `const`를 쓰면 안 된다 — Dart가 같은 인자의 const 표현식을 정규화해
+    // **같은 인스턴스**를 돌려주므로, 객체 동일성 구현이 그대로 통과한다.
+    // (처음에 const로 썼다가 이 변이가 살아남는 것을 확인했다.)
+    repo.activeSession = _freshSession(sessionId: 88, sessionName: '정기모임');
+    harness.visible.value = false;
+    await tester.pumpAndSettle();
+    harness.visible.value = true;
+    await tester.pumpAndSettle();
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석코드 입력'), findsNothing);
+    expect(find.text('오늘 출석이 완료되었습니다'), findsOneWidget);
+    expect(repo.checkInArgs, hasLength(1), reason: '같은 세션에 두 번 제출하지 않는다');
+  });
+
   testWidgets('INVALID_ATTENDANCE_CODE → 입력이 비워지고 메시지가 뜬다', (tester) async {
     // 잡아야 할 잘못된 구현: 입력을 그대로 유지하거나 메시지를 띄우지 않는다.
     final scanner = FakeBeaconScanner();
@@ -530,7 +644,7 @@ void main() {
     // 계속 화면에 남는다(조건 없이 계속 렌더).
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: _, routes: routes) = await _pumpHome(
+    final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -588,7 +702,7 @@ void main() {
     // 그대로 남는다.
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: _, routes: routes) = await _pumpHome(
+    final (container: _, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -817,7 +931,7 @@ void main() {
     final scanner = FakeBeaconScanner();
     final configRepo = _DeferredBeaconConfigRepository();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: container, routes: _) = await _pumpHome(
+    final (:container, routes: _, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -864,7 +978,7 @@ void main() {
     // 새로 조회한 세션이 AND 조건을 만족시킨다 — 팝업이 그대로 살아남는다.
     final scanner = FakeBeaconScanner();
     final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
-    final (container: container, routes: routes) = await _pumpHome(
+    final (:container, :routes, visible: _) = await _pumpHome(
       tester,
       scanner: scanner,
       attendanceRepository: repo,
@@ -887,6 +1001,54 @@ void main() {
     _expectNoLeftoverPopupRoute(routes);
     // 새 클럽에서는 아직 아무 비콘도 감지되지 않았다.
     expect(find.text('비콘을 찾는 중입니다...'), findsOneWidget);
+  });
+
+  testWidgets('클럽이 바뀌면 세션 id가 같아도 출석 완료 래치가 풀린다', (tester) async {
+    // 잡아야 할 잘못된 구현: `_resetClubScopedState`에서 래치 초기화를
+    // 빠뜨린다. 세션 id는 클럽 단위로 매겨진다(`/clubs/{clubId}/sessions/
+    // {sessionId}/attendance`이고 `ActiveSession`은 clubId를 담지 않는다)
+    // — 두 클럽에 속한 부원이 클럽 7의 88번에 출석한 뒤 클럽 9로 바꿨을 때
+    // 그쪽 활성 세션도 88번이면, 출석한 적 없는 세션에 대해 입력란이 막히고
+    // 본문은 "출석이 완료되었습니다"라고 말한다(리뷰 Important 2).
+    final scanner = FakeBeaconScanner();
+    final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+      ..results.add(AttendanceStatus.present);
+    final (:container, routes: _, visible: _) = await _pumpHome(
+      tester,
+      scanner: scanner,
+      attendanceRepository: repo,
+    );
+
+    // 클럽 7의 세션 88에 출석한다.
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+    await _enterOtp(tester, '1234');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('확인'));
+    await tester.pumpAndSettle();
+
+    // 클럽 9로 바꾼다. 그쪽 활성 세션도 **우연히 id가 88**이다.
+    (container.read(sessionControllerProvider.notifier) as _ReadySessionController).switchTo(
+      _otherClubProfile,
+    );
+    // 클럽 전환은 `await _cancelBeaconSubscription()`을 지나가야 새 스캔이
+    // 시작된다 — `fakeAsync`의 마이크로태스크 flush는 그 루트 존 future를
+    // 진행시키지 않으므로 실제 이벤트 루프를 한 번 돌려준다.
+    for (var i = 0; i < 5; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+      await tester.pumpAndSettle();
+    }
+    expect(scanner.watchCallCount, 2, reason: '새 클럽의 스캔이 실제로 다시 시작돼야 이 검사가 의미를 갖는다');
+
+    scanner.emit(const BeaconDetected(-60));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('출석코드 입력'),
+      findsOneWidget,
+      reason: '다른 클럽의 88번 세션에는 출석한 적이 없다',
+    );
+    expect(find.text('오늘 출석이 완료되었습니다'), findsNothing);
   });
 
   // ---------------------------------------------------------------------
