@@ -11,4 +11,7 @@ ClubMember _$ClubMemberFromJson(Map<String, dynamic> json) => ClubMember(
   name: json['name'] as String,
   stdId: json['stdId'] as String,
   role: ClubRole.fromWire(json['role'] as String),
+  part: json['part'] as String?,
+  rate: json['rate'] as num?,
+  attendanceCount: (json['attendanceCount'] as num?)?.toInt(),
 );
