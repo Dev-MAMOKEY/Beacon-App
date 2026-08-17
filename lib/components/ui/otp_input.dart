@@ -14,12 +14,10 @@ class AppOtpController extends ChangeNotifier {
   int get resetTick => _resetTick;
   int get shakeTick => _shakeTick;
 
-  void reset() {
-    _resetTick++;
-    notifyListeners();
-  }
-
   /// 오답일 때 입력을 비우고 흔든다.
+  ///
+  /// 초기화만 하는 `reset()`도 있었는데 `lib/` 어디에서도 쓰이지 않아
+  /// 걷어냈다 — 실제 사용처는 전부 "오답이니 비우고 흔든다"였다(#47).
   void shake() {
     _shakeTick++;
     _resetTick++;

@@ -145,7 +145,7 @@ class BeaconScanConfig {
 
 /// BLE 비콘 감지를 추상화한 계약. 화면과 컨트롤러는 이 인터페이스에만
 /// 의존한다 — 실 구현은 [FlutterBeaconScanner](data), 테스트는
-/// [FakeBeaconScanner](data)를 쓴다.
+/// `FakeBeaconScanner`(test/support)를 쓴다.
 abstract interface class BeaconScanner {
   /// [config]로 스캔을 시작하고 상태 변화를 흘려보낸다. 새로 부르면 이전
   /// 스캔은 정리되고 새 스캔으로 대체된다.

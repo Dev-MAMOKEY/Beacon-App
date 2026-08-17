@@ -12,7 +12,7 @@ import 'package:beacon_app/features/auth/presentation/login_screen.dart';
 import 'package:beacon_app/features/auth/presentation/signup_screen.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
-import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
+import '../../support/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';

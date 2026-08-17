@@ -8,6 +8,7 @@ import '../../../components/ui/app_switch.dart';
 import '../../../components/ui/button.dart';
 import '../../../components/ui/card.dart';
 import '../../../components/ui/input.dart';
+import '../../../components/ui/owned_routes.dart';
 import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/network/api_exception.dart';
@@ -53,7 +54,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   /// `Navigator.pop()`이 아니라 라우트 객체를 들고 있는 이유: pop은 "스택
   /// 맨 위"를 닫을 뿐 정체성을 모르므로, 우리 팝업 위에 다른 루트 라우트가
   /// 얹혀 있으면 엉뚱한 것을 닫는다(`records_screen.dart`와 같은 이유).
-  Route<void>? _popupRoute;
+  late final OwnedRoutes _owned = OwnedRoutes(_rootNavigator);
 
   /// 진행 중인 알림 토글 요청의 세대. `dispose()` 이후에 도착하는 응답을
   /// 무효화하는 용도로 남는다.
@@ -122,6 +123,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final visible = TickerMode.valuesOf(context).enabled;
     if (visible == _visible) return;
     _visible = visible;
+    _owned.visible = visible;
     if (!visible) _detachPopup();
   }
 
@@ -150,42 +152,24 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     // 위해 프로덕션에 발판을 남기는 값이 그만큼은 아니라고 판단했다.
     // 계약을 표명하는 의미로 둔다.
     _closePopup();
-    final route = buildAppPopupRoute<void>(
-      context: context,
-      navigator: _rootNavigator,
-      builder: builder,
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: builder,
+      ),
     );
-    _popupRoute = route;
-    unawaited(
-      _rootNavigator.push<void>(route).then((_) {
-        // 이미 다른 팝업으로 바뀐 뒤에 도착한 옛 팝업의 완료가 현재 추적을
-        // 지우지 않도록 정체성으로 판정한다.
-        if (identical(_popupRoute, route)) _popupRoute = null;
-      }),
-    );
-  }
-
-  Route<void>? _takePopup() {
-    final route = _popupRoute;
-    _popupRoute = null;
-    return route;
-  }
-
-  void _removePopupRoute(Route<void>? route) {
-    if (route != null && route.isActive) _rootNavigator.removeRoute(route);
   }
 
   /// 지금 당장 닫는다. `dispose()`와 비동기 완료 지점에서 쓴다.
-  void _closePopup() => _removePopupRoute(_takePopup());
+  void _closePopup() => _owned.closeAll();
 
   /// 추적만 지금 끊고 실제 제거는 이 프레임이 끝난 뒤로 미룬다.
   /// `didChangeDependencies()`는 빌드 단계라 내비게이션을 할 수 없다.
   void _detachPopup() {
-    final route = _takePopup();
-    if (route == null) return;
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _removePopupRoute(route),
-    );
+    final routes = _owned.take();
+    if (routes.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _owned.removeAll(routes));
   }
 
   // ---------------------------------------------------------------------

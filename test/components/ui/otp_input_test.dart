@@ -69,11 +69,11 @@ void main() {
       expect(
         tester.widget<TextField>(fields.at(i)).controller!.text,
         digits[i],
-        reason: 'reset 전에는 $i번 칸이 실제로 채워져 있어야 검증이 의미가 있다',
+        reason: 'shake 전에는 \$i번 칸이 실제로 채워져 있어야 검증이 의미가 있다',
       );
     }
 
-    controller.reset();
+    controller.shake();
     await tester.pump();
 
     for (var i = 0; i < digits.length; i++) {
@@ -119,12 +119,12 @@ void main() {
     await tester.pump();
 
     // 옛 컨트롤러(A)의 리스너는 이미 떨어졌어야 한다 — 신호를 보내도 무시된다.
-    controllerA.reset();
+    controllerA.shake();
     await tester.pump();
     expect(tester.widget<TextField>(find.byType(TextField).first).controller!.text, '1');
 
-    // 새 컨트롤러(B)로 reset하면 실제로 반응한다.
-    controllerB.reset();
+    // 새 컨트롤러(B)로 신호를 보내면 실제로 반응한다.
+    controllerB.shake();
     await tester.pump();
     expect(tester.widget<TextField>(find.byType(TextField).first).controller!.text, isEmpty);
   });
