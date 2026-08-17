@@ -12,6 +12,36 @@ Widget _host(Widget child) {
 }
 
 void main() {
+  testWidgets('기본값은 출석 코드 팝업의 Figma 실측이다', (tester) async {
+    // 잡아야 할 잘못된 구현: 기본값을 초대코드 쪽 수치(43/12/14/영숫자)로
+    // 바꾼다. #61에서 이 위젯을 두 화면이 공유하도록 매개변수화하면서
+    // **바꿀 수 있게** 만들었는데 검증이 없어, 네 값을 전부 바꿔도 454개가
+    // 그대로 통과했다(#63).
+    //
+    // 이 프로젝트가 이미 두 번 밟은 함정과 같다 — `Timer.new` 기본값,
+    // 홈의 `DateTime.now` 기본값. 주입점의 프로덕션 기본값을 지나는 검사가
+    // 어딘가에 하나는 있어야 한다.
+    //
+    // 실측 출처: `339:1683` 출석코드 팝업 — 칸 56×64, 간격 16, 반경 12.
+    await tester.pumpWidget(_host(AppOtpInput(length: 4, onCompleted: (_) {})));
+    await tester.pump();
+
+    final cell = tester.widgetList<SizedBox>(find.byType(SizedBox)).where(
+      (box) => box.width == 56 && box.height == 64,
+    );
+    expect(cell, hasLength(4), reason: '칸은 56×64다');
+
+    final gaps = tester.widgetList<SizedBox>(find.byType(SizedBox)).where(
+      (box) => box.width == 16 && box.height == null,
+    );
+    expect(gaps, hasLength(3), reason: '칸 사이 간격은 16이고 바깥쪽엔 없다');
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    final border = field.decoration!.enabledBorder! as OutlineInputBorder;
+    expect(border.borderRadius, BorderRadius.circular(12));
+    expect(field.keyboardType, TextInputType.number, reason: '출석 코드는 숫자 전용이다');
+  });
+
   testWidgets('length만큼 칸을 그린다', (tester) async {
     await tester.pumpWidget(_host(AppOtpInput(length: 4, onCompleted: (_) {})));
     await tester.pump();
