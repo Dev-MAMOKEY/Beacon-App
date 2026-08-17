@@ -9,6 +9,7 @@ import '../../../components/ui/app_progress_bar.dart';
 import '../../../components/ui/button.dart';
 import '../../../components/ui/card.dart';
 import '../../../components/ui/otp_input.dart';
+import '../../../components/ui/owned_routes.dart';
 import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
@@ -239,7 +240,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// 이 화면이 루트 내비게이터에 직접 push한 팝업 라우트 전부 — 상태 기반
   /// 팝업뿐 아니라 출석완료 팝업도 포함한다. 홈이 트리에서 빠지거나 홈 탭이
   /// 숨겨지면 여기 담긴 것을 전부 닫는다(리뷰 Important 6).
-  final List<Route<void>> _ownedRoutes = [];
+  late final OwnedRoutes _owned = OwnedRoutes(_rootNavigator);
 
   /// `initState`에서 한 번 읽어 저장해 둔다 — Riverpod의
   /// `ConsumerStatefulElement`는 `dispose()` 시점에 `ref`가 이미
@@ -295,6 +296,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final next = _tabVisible && _appObservable;
     if (next == _visible) return;
     _visible = next;
+    // 소유자가 가시성을 알아야 숨겨진 동안 push를 거부한다 — 호출부마다
+    // 가드를 기억하는 구조를 없애는 것이 이 클래스의 목적이다(#47).
+    _owned.visible = next;
     if (next) {
       _onBecameVisible();
     } else {
@@ -628,30 +632,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// `identical` 검사는 재현된 버그의 수정이라기보다, pop과 재push 사이에
   /// `await`이 하나라도 끼는 순간 활성화될 함정을 구조적으로 없애는 것이다.
   /// 아래 `_removeOwnedRoute`가 라우트 객체를 필요로 하므로 비용도 0이다.
-  Route<void> _pushOwnedRoute(Route<void> route) {
-    // 이 화면이 라우트를 push하는 **유일한** 통로다. 호출부마다 가드를
-    // 기억해야 하는 구조라 실제로 한 곳(완료 팝업)이 빠져 있었고, 그
-    // 결과 모달이 다른 탭 위에 떴다(리뷰 Important 1).
-    //
-    // 이건 **디버그 트립와이어일 뿐 보호 장치가 아니다** — `assert`는
-    // 릴리즈에서 사라진다. 실제 보호는 호출부 세 곳의 `_visible` 검사이고,
-    // 이 줄은 다음에 push 지점을 추가하는 사람이 가드를 잊으면 개발 중에
-    // 큰 소리로 실패하게 만드는 용도다.
-    assert(_visible, '숨겨진 홈이 라우트를 push하면 다른 탭 위에 뜬다 — 호출부에 가시성 가드를 두세요');
-    _ownedRoutes.add(route);
+  /// [OwnedRoutes]가 가시성을 보고 **거부**하므로 호출부는 가드를 기억할
+  /// 필요가 없다 — 그 기억에 기대던 구조가 #41의 원인이었다. 숨겨져 있으면
+  /// null이 돌아오고, 그때는 "띄우지 않았다"로 다뤄야 한다.
+  Route<void>? _pushOwnedRoute(Route<void> route) {
+    final pushed = _owned.push(route);
+    if (pushed == null) return null;
     unawaited(
-      _rootNavigator.push<void>(route).then((_) {
-        _ownedRoutes.remove(route);
-        if (identical(_shownPopupRoute, route)) {
+      pushed.popped.then((_) {
+        if (identical(_shownPopupRoute, pushed)) {
           _shownPopup = HomePopupTarget.none;
           _shownPopupRoute = null;
         }
       }),
     );
-    return route;
+    return pushed;
   }
 
-  Route<void> _pushOwnedPopup(WidgetBuilder builder) => _pushOwnedRoute(
+  Route<void>? _pushOwnedPopup(WidgetBuilder builder) => _pushOwnedRoute(
     buildAppPopupRoute<void>(context: context, navigator: _rootNavigator, builder: builder),
   );
 
@@ -659,8 +657,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// 정체성을 모르므로, 우리 팝업 위에 다른 루트 라우트가 얹혀 있으면
   /// 엉뚱한 것을 닫는다(리뷰 Important 6).
   void _removeOwnedRoute(Route<void> route) {
-    if (!_ownedRoutes.remove(route)) return;
-    if (route.isActive) _rootNavigator.removeRoute(route);
+    if (!_owned.owns(route)) return;
+    _owned.remove(route);
   }
 
   /// 소유 목록을 비우고 그 내용을 돌려준다. 추적 상태를 먼저 지우기 위한
@@ -669,9 +667,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   List<Route<void>> _takeOwnedPopups() {
     _shownPopup = HomePopupTarget.none;
     _shownPopupRoute = null;
-    final routes = List<Route<void>>.of(_ownedRoutes);
-    _ownedRoutes.clear();
-    return routes;
+    return _owned.take();
   }
 
   /// 홈 탭이 실제로 보일 때만 토스트를 띄운다.
@@ -710,11 +706,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
-  void _removeRoutes(List<Route<void>> routes) {
-    for (final route in routes) {
-      if (route.isActive) _rootNavigator.removeRoute(route);
-    }
-  }
+  void _removeRoutes(List<Route<void>> routes) => _owned.removeAll(routes);
 
   void _closeOwnedPopups() => _removeRoutes(_takeOwnedPopups());
 
@@ -724,7 +716,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// false`) — 사용자가 빠져나가는 길은 블루투스를 직접 켜서 조건 자체를
   /// 거짓으로 만들거나(그러면 다음 비콘 이벤트에서 [_syncPopups]가 스스로
   /// 닫는다), 버튼으로 설정 화면에 가는 것뿐이다.
-  Route<void> _pushBluetoothOffDialog() {
+  Route<void>? _pushBluetoothOffDialog() {
     return _pushOwnedPopup(
       (context) => PopScope(
         canPop: false,
@@ -742,7 +734,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   /// 닫는다. 그래서 스크림 탭으로도 시스템 뒤로가기로도 닫히지 않게 뒀다
   /// (`PopScope(canPop: false)`) — 닫는 방법이 아예 없는 게 아니라, 그
   /// 방법이 사용자 조작이 아니라 조건 자체의 전이라는 뜻이다.
-  Route<void> _pushCodeInputDialog() {
+  Route<void>? _pushCodeInputDialog() {
     // 팝업을 새로 여는 것은 언제나 새 시도의 시작이다 — 이전에 열렸을 때
     // 남은 오답 메시지·재시도 버튼을 끌고 오지 않는다. 특히 재시도 버튼이
     // 살아남으면 그 버튼이 옛 `_lastOtpCode`를 다시 쏘아 올린다.
@@ -856,12 +848,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         // 최종 내비게이터 상태는 같지만(한 프레임 동안만 겹친다), 겹쳐 보이는
         // 프레임을 만들지 않는 쪽이 낫다 — 불변식이 아니라 표시상의 선택이다.
         _syncPopups();
-        // `_syncPopups`는 `_visible`을 보지만 이 push는 보지 않았다 — 응답이
-        // 도착할 때 홈이 숨겨져 있으면 전체 스크림을 가진 모달 완료 팝업이
-        // **사용자가 지금 보고 있는 다른 탭 위에** 뜬다. 홈은 이미 숨겨져
-        // 있어 `_onBecameHidden`이 다시 불리지 않고 `_onBecameVisible`도
-        // 소유 라우트를 닫지 않으므로, 확인을 누르기 전엔 앱을 되찾을 수
-        // 없었다(리뷰 Important 1).
+        // 가시성 판정은 `_owned`가 한다 — 숨겨져 있으면 push 자체가 거부된다.
+        // 예전에는 이 자리에 호출부 가드가 있었고, 그 가드를 **잊은 것**이
+        // #41의 원인이었다.
         //
         // 상태(`_checkedInSessionId`)는 위에서 이미 반영했다 — 숨겨졌다는
         // 이유로 서버가 인정한 출석을 잊으면 돌아왔을 때 중복 제출을 부른다.
@@ -870,11 +859,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         // 감지돼야만** 보인다(`_detectedSection` 안에 있다). 방을 이미
         // 떠났다면 그 문구를 영영 못 볼 수도 있다 — 알림을 감춘 대가이며,
         // 중복 제출을 부르는 것보다는 낫다는 판단이다(리뷰 Minor 1).
-        if (_visible) {
-          _pushOwnedRoute(
-            buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
-          );
-        }
+        _pushOwnedRoute(
+          buildAttendanceSuccessRoute(context, navigator: _rootNavigator, status: status),
+        );
       case CheckInInvalidCode():
         _otpController.shake();
         _reportCheckInMessage('비밀번호가 올바르지 않습니다');

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../components/ui/card.dart';
+import '../../../components/ui/owned_routes.dart';
 import '../../../components/ui/sheet.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
@@ -62,7 +63,7 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
   /// 이 화면이 루트 내비게이터에 push한 시트 라우트. 탭이 숨겨지거나 화면이
   /// 트리에서 빠지면 닫는다 — `Navigator.pop()`은 "스택 맨 위"를 닫을 뿐
   /// 정체성을 모르므로 라우트 객체를 직접 들고 있는다.
-  Route<void>? _sheetRoute;
+  late final OwnedRoutes _owned = OwnedRoutes(_rootNavigator);
 
   /// 열려 있는 시트가 보고 있는 날(1~31). 시트가 없으면 null이다.
   int? _sheetDay;
@@ -104,6 +105,7 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
     } else {
       _detachSheet();
     }
+    _owned.visible = visible;
   }
 
   @override
@@ -253,15 +255,17 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
         ),
       ),
     );
-    _sheetRoute = route;
+    final pushed = _owned.push(route);
+    if (pushed == null) {
+      // 숨겨진 동안에는 소유자가 push를 거부한다 — 추적 상태도 되돌린다.
+      _sheetDay = null;
+      return;
+    }
     unawaited(
-      _rootNavigator.push<void>(route).then((_) {
+      pushed.popped.then((_) {
         // 이미 다른 시트로 바뀐 뒤에 도착한 옛 시트의 완료가 현재 추적을
         // 지우지 않도록 정체성으로 판정한다(`home_screen.dart`와 같은 이유).
-        if (identical(_sheetRoute, route)) {
-          _sheetRoute = null;
-          _sheetDay = null;
-        }
+        if (_sheetDay == day && !_owned.owns(pushed)) _sheetDay = null;
       }),
     );
   }
@@ -284,18 +288,12 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
   /// 시트 추적 상태만 비우고 라우트를 돌려준다. 실제 제거([_removeSheetRoute])
   /// 와 분리돼 있는 이유는 빌드 단계에서는 내비게이션을 할 수 없기 때문이다
   /// (`home_screen.dart`의 `_takeOwnedPopups`와 같은 이유).
-  Route<void>? _takeSheet() {
-    final route = _sheetRoute;
-    _sheetRoute = null;
+  List<Route<void>> _takeSheet() {
     _sheetDay = null;
-    return route;
+    return _owned.take();
   }
 
-  void _removeSheetRoute(Route<void>? route) {
-    // `Navigator.pop()`은 "스택 맨 위"를 닫을 뿐 정체성을 모른다 — 우리 시트
-    // 위에 다른 루트 라우트가 얹혀 있으면 엉뚱한 것을 닫는다.
-    if (route != null && route.isActive) _rootNavigator.removeRoute(route);
-  }
+  void _removeSheetRoute(List<Route<void>> routes) => _owned.removeAll(routes);
 
   /// 지금 당장 닫는다. `dispose()`처럼 프레임 뒤로 미룰 수 없는 자리와,
   /// 빌드 단계가 아닌 비동기 완료 지점에서만 쓴다.
@@ -307,9 +305,9 @@ class _RecordsScreenState extends ConsumerState<RecordsScreen> {
   /// 이유로 `addPostFrameCallback`을 쓴다. 오늘 동기 호출이 터지지 않는 것은
   /// 우연이지 계약이 아니다.
   void _detachSheet() {
-    final route = _takeSheet();
-    if (route == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _removeSheetRoute(route));
+    final routes = _takeSheet();
+    if (routes.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _removeSheetRoute(routes));
   }
 
   /// 클럽이 바뀌었다 — 이전 클럽에서 받은 것을 전부 버린다.
