@@ -176,20 +176,24 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('회원가입', style: typography.title3.copyWith(color: colors.gray3)),
+              // Figma 실측(`394:1251`): title2(SemiBold 28) / main.
+              // Phase 1은 title3 / gray3였다.
+              Text('회원가입', style: typography.title2.copyWith(color: colors.main)),
               const SizedBox(height: 32),
               AppInput(
                 controller: _stdId,
                 label: '학번',
-                hint: '학번을 입력해주세요',
+                // 실측(`I317:1488;317:1435`) 문구 그대로.
+                hint: '학번을 입력하세요',
                 errorText: _stdIdError,
                 onChanged: _clearStdIdError,
               ),
-              const SizedBox(height: 20),
+              // 실측(`394:1254` Form): 입력 사이 간격 24.
+              const SizedBox(height: 24),
               AppInput(
                 controller: _name,
                 label: '이름',
-                hint: '이름을 입력해주세요',
+                hint: '이름을 입력하세요',
                 errorText: _nameError,
                 onChanged: _clearNameError,
               ),
@@ -197,7 +201,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               AppPasswordInput(
                 controller: _password,
                 label: '비밀번호',
-                hint: '영문과 숫자를 포함해 8자 이상',
+                // 실측은 두 비밀번호 칸 모두 같은 문구다. 검증 규칙 안내는
+                // 힌트가 아니라 오류 메시지가 맡는다(`AuthFormValidator`).
+                hint: '비밀번호를 입력하세요',
                 errorText: _passwordError,
                 onChanged: _clearPasswordError,
               ),
@@ -205,7 +211,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               AppPasswordInput(
                 controller: _passwordConfirm,
                 label: '비밀번호 확인',
-                hint: '비밀번호를 한 번 더 입력해주세요',
+                hint: '비밀번호를 입력하세요',
                 errorText: _passwordConfirmError,
                 onChanged: _clearPasswordConfirmError,
               ),
@@ -226,10 +232,22 @@ class _SignupScreenState extends ConsumerState<SignupScreen> {
               const SizedBox(height: 20),
               GestureDetector(
                 onTap: () => context.pop(),
-                child: Text(
-                  '이미 계정이 있으신가요? 로그인',
-                  textAlign: TextAlign.center,
-                  style: typography.body3.copyWith(color: colors.gray2),
+                // 실측(`394:1260`): 두 조각이 서로 다른 토큰이다 —
+                // 안내는 body3/gray2, 링크는 title7/gray3이고 문구도
+                // "로그인"이 아니라 "로그인하기"다.
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      '이미 계정이 있으신가요?',
+                      style: typography.body3.copyWith(color: colors.gray2),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '로그인하기',
+                      style: typography.title7.copyWith(color: colors.gray3),
+                    ),
+                  ],
                 ),
               ),
             ],

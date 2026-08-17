@@ -11,6 +11,7 @@ import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/data/auth_repository.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
 import 'package:beacon_app/features/auth/presentation/signup_screen.dart';
+import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -230,6 +231,40 @@ Future<void> _fillValidSignupForm(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('Figma 실측 — 제목 title2/main, 힌트 문구, 하단 두 토큰', (tester) async {
+    // 잡아야 할 잘못된 구현: Phase 1의 title3/gray3 제목, "…입력해주세요"
+    // 힌트, 하단을 한 덩어리 body3/gray2로 그리기.
+    // 이 화면의 레이아웃은 지금까지 어떤 테스트도 고정하지 않았다(#61).
+    //
+    // 실측 출처: `394:1249` "회원가입" — 제목 `394:1251`,
+    // 힌트 `I317:1488;317:1435`, 하단 `394:1260`.
+    final host = _hostWithContainer(_SignupSucceedsRepository());
+    addTearDown(host.container.dispose);
+    await tester.pumpWidget(host.widget);
+    await tester.pumpAndSettle();
+    host.router.push('/signup');
+    await tester.pumpAndSettle();
+
+    final title = tester.widget<Text>(find.text('회원가입').first);
+    expect(title.style!.fontSize, 28, reason: 'title2(28)이다');
+    expect(title.style!.color, AppColors.light.main, reason: 'gray3가 아니라 main이다');
+
+    expect(find.text('학번을 입력하세요'), findsOneWidget);
+    expect(find.text('이름을 입력하세요'), findsOneWidget);
+    expect(
+      find.text('비밀번호를 입력하세요'),
+      findsNWidgets(2),
+      reason: '두 비밀번호 칸 모두 같은 문구다',
+    );
+
+    // 하단은 한 덩어리가 아니라 두 조각이고 토큰이 서로 다르다.
+    final hint = tester.widget<Text>(find.text('이미 계정이 있으신가요?'));
+    expect(hint.style!.color, AppColors.light.gray2);
+    final link = tester.widget<Text>(find.text('로그인하기'));
+    expect(link.style!.color, AppColors.light.gray3);
+    expect(link.style!.fontWeight, FontWeight.w600, reason: 'title7(SemiBold)이다');
+  });
+
   testWidgets('회원가입에 성공하면 자동 로그인까지 이어져 세션이 만들어진다', (tester) async {
     final repository = _SignupSucceedsRepository();
     final host = _hostWithContainer(repository);
