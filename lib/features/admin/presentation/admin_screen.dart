@@ -242,6 +242,13 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     workingInvite: false,
   ));
 
+  /// 설정 조회·저장의 세대. 시트를 열 때마다 올라간다.
+  ///
+  /// 세션 목록(`_generation`)·출석 시트(`_attendanceSession`)와 같은 이유다 —
+  /// `mounted`만 보면 **시트를 닫았다 다시 연 뒤** 뒤늦게 도착한 응답이
+  /// 방금 입력한 값을 조용히 덮어쓴다.
+  int _settingsGeneration = 0;
+
   final TextEditingController _clubName = TextEditingController();
   final TextEditingController _clubDescription = TextEditingController();
 
@@ -579,6 +586,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   // ---- 설정 -------------------------------------------------------------
 
   void _openSettings(int clubId) {
+    final generation = ++_settingsGeneration;
     _settingsState.value = (
       inviteCode: null,
       beacon: null,
@@ -619,7 +627,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         ),
       ),
     );
-    unawaited(_loadSettings(clubId));
+    unawaited(_loadSettings(clubId, generation));
   }
 
   /// 동아리·초대코드·비콘·PSK를 한 번에 읽는다.
@@ -627,13 +635,13 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   /// 초대코드만 실패해도 화면 전체를 못 쓰게 만들지는 않는다 — 코드가 없는
   /// 것과 못 읽은 것은 리포지토리가 이미 구분해 준다. 반대로 동아리 정보나
   /// 비콘 설정을 못 읽으면 편집할 대상이 없으므로 실패로 다룬다.
-  Future<void> _loadSettings(int clubId) async {
+  Future<void> _loadSettings(int clubId, int generation) async {
     try {
       final results = await Future.wait([
         ref.read(clubSettingsRepositoryProvider).fetchClub(clubId),
         ref.read(beaconConfigRepositoryProvider).fetch(clubId),
       ]);
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
 
       final club = results[0] as ClubDetail;
       final beacon = results[1] as BeaconConfig;
@@ -642,7 +650,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 
       final code = await _readInviteCode(clubId);
       final hasPsk = await _readHasPsk();
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
 
       _settingsState.value = (
         inviteCode: code,
@@ -655,7 +663,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         workingInvite: false,
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _settingsState.value = (
         inviteCode: null,
         beacon: null,
@@ -668,6 +676,22 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
       );
     }
   }
+
+  /// 이 화면이 보일 때만 토스트를 띄운다.
+  ///
+  /// `showAppToast(context, ...)`를 await 뒤에서 직접 부르면 분석기가
+  /// `_isCurrentSettings` 안의 `mounted` 검사를 꿰뚫어 보지 못해
+  /// `use_build_context_synchronously`로 경고한다. 검사와 사용을 한 곳에
+  /// 붙여 두면 그 경고가 정당하게 사라진다.
+  void _settingsToast(String message) {
+    if (!mounted || !_visible) return;
+    showAppToast(context, message);
+  }
+
+  /// 이 응답이 아직 최신인지. 시트를 닫았다 다시 열면 세대가 올라가므로,
+  /// 그 전에 띄운 요청의 결과는 여기서 버려진다.
+  bool _isCurrentSettings(int generation) =>
+      mounted && generation == _settingsGeneration;
 
   /// 초대코드를 못 읽는 것은 설정 화면 전체를 막을 이유가 아니다.
   Future<String?> _readInviteCode(int clubId) async {
@@ -688,9 +712,10 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   }
 
   Future<void> _saveClub(int clubId) async {
+    final generation = _settingsGeneration;
     final name = _clubName.text.trim();
     if (name.isEmpty) {
-      if (mounted && _visible) showAppToast(context, '동아리명을 입력해주세요.');
+      _settingsToast('동아리명을 입력해주세요.');
       return;
     }
     if (_settingsState.value.savingClub) return;
@@ -714,59 +739,62 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
       // 응답이 수정된 동아리가 아니라 문자열이라, 무엇이 저장됐는지는
       // 다시 읽어야만 알 수 있다.
       final club = await ref.read(clubSettingsRepositoryProvider).fetchClub(clubId);
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _clubName.text = club.clubName;
       _clubDescription.text = club.clubDescription ?? '';
       _setSettings(savingClub: false);
-      if (_visible) showAppToast(context, '동아리 정보를 저장했습니다.');
+      _settingsToast('동아리 정보를 저장했습니다.');
     } catch (_) {
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(savingClub: false);
-      if (_visible) showAppToast(context, '동아리 정보를 저장하지 못했습니다.');
+      _settingsToast('동아리 정보를 저장하지 못했습니다.');
     }
   }
 
   Future<void> _issueInviteCode(int clubId) async {
+    final generation = _settingsGeneration;
     if (_settingsState.value.workingInvite) return;
     _setSettings(workingInvite: true);
     try {
       final code = await ref.read(clubSettingsRepositoryProvider).issueInviteCode(clubId);
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(workingInvite: false, inviteCode: code, hasInviteCode: true);
     } catch (_) {
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(workingInvite: false);
-      if (_visible) showAppToast(context, '초대코드를 발급하지 못했습니다.');
+      _settingsToast('초대코드를 발급하지 못했습니다.');
     }
   }
 
   Future<void> _revokeInviteCode(int clubId) async {
+    final generation = _settingsGeneration;
     if (_settingsState.value.workingInvite) return;
     _setSettings(workingInvite: true);
     try {
       await ref.read(clubSettingsRepositoryProvider).revokeInviteCode(clubId);
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(workingInvite: false, inviteCode: null, hasInviteCode: true);
     } catch (_) {
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(workingInvite: false);
-      if (_visible) showAppToast(context, '초대코드를 무효화하지 못했습니다.');
+      _settingsToast('초대코드를 무효화하지 못했습니다.');
     }
   }
 
   Future<void> _saveBeacon(int clubId, BeaconConfig config) async {
+    final generation = _settingsGeneration;
     if (_settingsState.value.savingBeacon) return;
     _setSettings(savingBeacon: true);
     try {
       final saved = await ref.read(beaconConfigRepositoryProvider).update(clubId, config);
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       // 서버가 다듬은 값이 있으면 그게 화면에 반영돼야 한다.
       _setSettings(savingBeacon: false, beacon: saved, hasBeacon: true);
-      if (_visible) showAppToast(context, '비콘 설정을 저장했습니다.');
+      _settingsToast('비콘 설정을 저장했습니다.');
     } catch (_) {
-      if (!mounted) return;
+      if (!_isCurrentSettings(generation)) return;
       _setSettings(savingBeacon: false);
-      if (_visible) showAppToast(context, '비콘 설정을 저장하지 못했습니다.');
+      _settingsToast('비콘 설정을 저장하지 못했습니다.');
     }
   }
 
@@ -814,13 +842,12 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
             try {
               await store.save(psk);
             } catch (_) {
-              if (!mounted || !_visible) return;
-              showAppToast(context, 'PSK를 저장하지 못했습니다.');
+              _settingsToast('PSK를 저장하지 못했습니다.');
               return;
             }
             if (!mounted) return;
             _setSettings(hasPsk: true);
-            if (_visible) showAppToast(context, 'PSK를 저장했습니다.');
+            _settingsToast('PSK를 저장했습니다.');
           },
         ),
       ),

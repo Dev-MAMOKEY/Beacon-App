@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/error_code.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
@@ -46,8 +48,21 @@ class _FakeSettingsRepository implements ClubSettingsRepository {
   int issued = 0;
   int revoked = 0;
 
+  /// 켜 두면 [fetchClub]이 곧바로 끝나지 않고 [clubGates]에 문을 하나 만든다.
+  /// 테스트가 그 문을 열어 줄 때까지 응답이 도착하지 않는다 — 느린 조회를
+  /// 재현한다.
+  bool deferClub = false;
+  final List<Completer<void>> clubGates = [];
+
   @override
-  Future<ClubDetail> fetchClub(int clubId) async => club;
+  Future<ClubDetail> fetchClub(int clubId) async {
+    if (deferClub) {
+      final gate = Completer<void>();
+      clubGates.add(gate);
+      await gate.future;
+    }
+    return club;
+  }
 
   @override
   Future<void> updateClub({
@@ -219,6 +234,7 @@ Future<void> _openSettings(
   _FakeSettingsRepository? settings,
   _FakeBeaconRepository? beacon,
   _FakePskStore? psk,
+  bool settle = true,
 }) async {
   final container = ProviderContainer(
     overrides: [
@@ -242,7 +258,14 @@ Future<void> _openSettings(
   );
   await tester.pumpAndSettle();
   await tester.tap(find.text('설정'));
-  await tester.pumpAndSettle();
+  // 조회가 걸려 있는 테스트는 로딩 스피너가 멈추지 않아 `pumpAndSettle`이
+  // 영원히 끝나지 않는다.
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
 }
 
 /// 시트 안에서만 찾는다 — 상단 바에도 "설정"이 있다.
@@ -558,6 +581,53 @@ void main() {
 
       expect(find.byType(BeaconPskPopupContent), findsNothing);
       expect(find.byType(ClubSettingsSheetContent), findsOneWidget);
+    });
+  });
+
+  group('낡은 응답', () {
+    testWidgets('시트를 닫았다 다시 연 뒤 도착한 조회는 편집을 덮지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: `_loadSettings`가 `mounted`만 확인한다.
+      // 같은 화면의 `_load`(세션 목록)는 `_generation`으로, `_loadAttendance`는
+      // 세션 id로 낡은 응답을 걸러 내는데 설정 조회만 그 가드가 없다.
+      //
+      // 느린 조회를 기다리다 시트를 닫고 다시 열면, 뒤늦게 도착한 첫 응답이
+      // 방금 입력한 값을 조용히 덮어쓴다.
+      final settings = _FakeSettingsRepository()..deferClub = true;
+      await _openSettings(tester, settings: settings, settle: false);
+
+      expect(settings.clubGates, hasLength(1), reason: '첫 조회가 걸려 있다');
+
+      // 로딩이 답답해 시트를 닫는다.
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(ClubSettingsSheetContent), findsNothing);
+
+      // 다시 열고, 이번엔 응답이 도착한다.
+      await tester.tap(find.text('설정'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(settings.clubGates, hasLength(2));
+      settings.clubGates[1].complete();
+      await tester.pumpAndSettle();
+
+      await _enterInSheet(tester, '마모키', '내가친이름');
+      await _enterInSheet(tester, 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0', '내가친UUID');
+
+      // 이제서야 첫 조회가 끝난다.
+      settings.clubGates[0].complete();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.widgetWithText(TextField, '내가친이름'),
+        findsOneWidget,
+        reason: '낡은 응답이 입력을 덮으면 안 된다',
+      );
+      expect(
+        find.widgetWithText(TextField, '내가친UUID'),
+        findsOneWidget,
+        reason: '낡은 응답이 비콘 섹션을 새로 만들면 편집이 날아간다',
+      );
     });
   });
 }
