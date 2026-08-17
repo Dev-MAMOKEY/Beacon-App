@@ -1320,6 +1320,28 @@ void main() {
       expect(find.text('출석코드 입력'), findsOneWidget);
     });
 
+    testWidgets('status가 ACTIVE가 아니면 세션이 없는 것으로 친다', (tester) async {
+      // 잡아야 할 잘못된 구현: `null` 여부만 보고 `status`를 무시한다. 1회
+      // 조회일 때는 그래도 됐지만, 15초마다 물으면 **세션이 막 끝나는 순간과
+      // 겹치는 응답**을 받을 수 있다 — 그때 `ENDED`를 활성으로 취급하면 끝난
+      // 세션에 대해 입력란을 열어 둔다.
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(
+        activeSession: const ActiveSession(
+          sessionId: 88,
+          sessionName: '정기모임',
+          status: 'ENDED',
+        ),
+      );
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+
+      expect(find.text('출석코드 입력'), findsNothing);
+      expect(find.text('현재 진행 중인 출석 세션이 없습니다'), findsOneWidget);
+    });
+
     testWidgets('숨겨진 동안에는 재조회하지 않는다', (tester) async {
       // 잡아야 할 잘못된 구현: 타이머를 멈추지 않는다 — 보이지도 않는 탭이
       // 계속 서버를 두드리고, 그 결과가 숨은 채로 팝업 상태를 흔든다.

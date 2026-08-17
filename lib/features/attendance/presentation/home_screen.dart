@@ -416,6 +416,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   void _startSessionRefresh(int clubId, int generation) {
     _stopSessionRefresh();
     _sessionRefreshTimer = Timer.periodic(activeSessionRefreshInterval, (_) {
+      // 세대 검사는 **오늘 기준으로는 관측 불가능**하다 — `_startSessionRefresh`
+      // 가 항상 이전 타이머를 먼저 취소하므로 살아 있는 타이머의 세대는 늘
+      // 현재 세대이고, 설령 어긋나더라도 `_loadActiveSession`이 응답을
+      // 버린다. 지우고 돌려도 실패하는 테스트가 없다(직접 확인). 남겨 두는
+      // 이유는 값이 아니라 요청 자체를 아끼기 위해서다 — 어긋난 세대에서는
+      // HTTP를 아예 보내지 않는다.
       if (!_isCurrentBootstrap(generation) || !_visible) return;
       unawaited(_loadActiveSession(clubId, generation));
     });
@@ -492,8 +498,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   Future<void> _loadActiveSession(int clubId, int generation) async {
     try {
-      final session = await ref.read(attendanceRepositoryProvider).fetchActiveSession(clubId);
+      final fetched = await ref.read(attendanceRepositoryProvider).fetchActiveSession(clubId);
       if (!_isCurrentBootstrap(generation)) return;
+      // `status`가 `ACTIVE`가 아니면 없는 것으로 친다.
+      //
+      // `ActiveSession`의 주석은 "엔드포인트 자체가 활성 세션만 돌려주므로
+      // 화면은 이 필드로 다시 분기하지 않는다"고 적어 뒀고, 1회 조회일
+      // 때는 그 말이 맞았다. 이제는 15초마다 묻기 때문에 **세션이 막 끝나는
+      // 순간과 겹치는 응답**을 받을 수 있다 — 그때 `ENDED`를 활성으로 취급하면
+      // 끝난 세션에 대해 입력란을 열어 둔다. 실패 방향을 닫는 쪽으로 잡는다.
+      final session = (fetched != null && fetched.status == 'ACTIVE') ? fetched : null;
       setState(() => _activeSession = session);
       _syncPopups();
     } catch (_) {
