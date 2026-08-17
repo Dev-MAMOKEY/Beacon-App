@@ -124,6 +124,59 @@ void main() {
     expect(routes.stack, hasLength(1));
   });
 
+  group('closeTop', () {
+    testWidgets('맨 위 하나만 닫고 밑은 남긴다', (tester) async {
+      // 시트 위에 팝업을 얹는 화면이 필요로 하는 동작이다. `closeAll`을
+      // 쓰면 팝업만 닫으려던 호출이 그 밑의 시트까지 닫는다.
+      final (:owned, :routes) = await _pump(tester);
+      owned.push(_route('시트'));
+      await tester.pumpAndSettle();
+      owned.push(_route('팝업'));
+      await tester.pumpAndSettle();
+
+      owned.closeTop();
+      await tester.pumpAndSettle();
+
+      expect(find.text('팝업'), findsNothing);
+      expect(find.text('시트'), findsOneWidget);
+    });
+
+    testWidgets('남은 라우트를 계속 소유한다', (tester) async {
+      // 호출부가 `remove(take().last)`로 흉내 내던 동작의 결함이 여기다 —
+      // `take()`가 추적을 통째로 비우는 바람에 밑의 시트가 **주인 없는
+      // 라우트**가 된다. 그러면 화면을 떠날 때 `closeAll`이 그걸 못 닫고,
+      // 시트가 다음 탭 위에 그대로 남는다(#41과 같은 결함).
+      final (:owned, :routes) = await _pump(tester);
+      final sheet = owned.push(_route('시트'))!;
+      await tester.pumpAndSettle();
+      owned.push(_route('팝업'));
+      await tester.pumpAndSettle();
+
+      owned.closeTop();
+      await tester.pumpAndSettle();
+
+      expect(owned.owns(sheet), isTrue, reason: '시트는 여전히 이 화면 소유다');
+
+      owned.closeAll();
+      await tester.pumpAndSettle();
+      expect(find.text('시트'), findsNothing);
+      expect(routes.stack, hasLength(1));
+    });
+
+    testWidgets('소유한 것이 없으면 아무것도 닫지 않는다', (tester) async {
+      // 남의 라우트가 위에 얹혀 있을 때 그걸 닫아 버리면 안 된다.
+      final (:owned, :routes) = await _pump(tester);
+      _pushForeign(_route('외부'));
+      await tester.pumpAndSettle();
+
+      owned.closeTop();
+      await tester.pumpAndSettle();
+
+      expect(find.text('외부'), findsOneWidget);
+      expect(routes.stack, hasLength(2));
+    });
+  });
+
   testWidgets('사용자가 닫은 라우트는 소유 목록에서 스스로 빠진다', (tester) async {
     final (:owned, :routes) = await _pump(tester);
     final pushed = owned.push(_route('A'))!;

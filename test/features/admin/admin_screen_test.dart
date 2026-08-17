@@ -9,6 +9,10 @@ import 'package:beacon_app/features/admin/data/session_repository.dart';
 import 'package:beacon_app/features/admin/presentation/admin_screen.dart';
 import 'package:beacon_app/features/admin/presentation/attendance_status_popup.dart';
 import 'package:beacon_app/features/admin/presentation/manual_attendance_popup.dart';
+import 'package:beacon_app/core/network/api_exception.dart';
+import 'package:beacon_app/core/network/error_code.dart';
+import 'package:beacon_app/features/admin/presentation/member_actions_popup.dart';
+import 'package:beacon_app/features/admin/presentation/members_sheet.dart';
 import 'package:beacon_app/features/admin/presentation/admin_session_card.dart';
 import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
@@ -186,17 +190,84 @@ class _FakePskStore implements BeaconPskStore {
 }
 
 class _StubMemberRepository implements ClubMemberRepository {
-  _StubMemberRepository(this.count);
+  _StubMemberRepository(
+    this.count, {
+    this.members,
+    this.myStdId,
+    this.failRoleUpdate = false,
+  });
 
   final int count;
 
+  /// 지정하면 [count] 대신 이 목록을 돌려준다. 역할 변경·제외가 **여기에
+  /// 실제로 반영된다** — 목록이 다시 그려지는지 보려면 서버가 바뀐 값을
+  /// 돌려주는 흉내까지 내야 한다.
+  final List<ClubMember>? members;
+
+  /// 지정하면 그 학번을 가진 멤버를 하나 끼워 넣는다 — "나"를 목록에서
+  /// 찾는 경로를 테스트하기 위한 것이다.
+  final String? myStdId;
+
+  /// 역할 변경을 실패시킨다 — 실패 뒤 화면이 어디로 돌아가는지 보기 위한 것.
+  final bool failRoleUpdate;
+
+  final List<String?> searches = [];
+  final List<(int requesterId, int targetId, ClubRole role)> roleUpdates = [];
+  final List<int> removed = [];
+
   @override
-  Future<List<ClubMember>> fetchMembers(int clubId) async => List.generate(
-    count,
-    // 이름과 학번을 **서로 다른 모양**으로 만든다 — 둘 다 '$i'면 어느 쪽을
-    // 찾았는지 테스트가 구별하지 못한다.
-    (i) => ClubMember(memberId: i, name: '부원$i', stdId: '2025000$i', role: ClubRole.member),
-  );
+  Future<void> updateRole({
+    required int clubId,
+    required int requesterId,
+    required int targetMemberId,
+    required ClubRole newRole,
+  }) async {
+    roleUpdates.add((requesterId, targetMemberId, newRole));
+    if (failRoleUpdate) throw ApiException(ErrorCode.unknown, '실패');
+    final custom = members;
+    if (custom == null) return;
+    final index = custom.indexWhere((m) => m.memberId == targetMemberId);
+    if (index < 0) return;
+    final old = custom[index];
+    custom[index] = ClubMember(
+      memberId: old.memberId,
+      name: old.name,
+      stdId: old.stdId,
+      role: newRole,
+      part: old.part,
+      rate: old.rate,
+      attendanceCount: old.attendanceCount,
+    );
+  }
+
+  @override
+  Future<void> removeMember({required int clubId, required int memberId}) async {
+    removed.add(memberId);
+    members?.removeWhere((m) => m.memberId == memberId);
+  }
+
+  @override
+  Future<List<ClubMember>> fetchMembers(int clubId, {String? search}) async {
+    searches.add(search);
+    final custom = members;
+    if (custom != null) {
+      if (search == null || search.isEmpty) return custom;
+      return custom
+          .where((m) => m.name.contains(search) || m.stdId.contains(search))
+          .toList();
+    }
+    return [
+      // 이름과 학번을 **서로 다른 모양**으로 만든다 — 둘 다 '$i'면 어느 쪽을
+      // 찾았는지 테스트가 구별하지 못한다.
+      for (var i = 0; i < count; i++)
+        ClubMember(
+          memberId: i,
+          name: '부원$i',
+          stdId: i == 0 && myStdId != null ? myStdId! : '2025000$i',
+          role: ClubRole.member,
+        ),
+    ];
+  }
 }
 
 class _ReadySessionController extends SessionController {
@@ -223,12 +294,16 @@ Future<void> _pumpAdmin(
   required _ScriptedSessionRepository repository,
   int memberCount = 15,
   _FakePskStore? pskStore,
+  _StubMemberRepository? memberRepository,
+  String? myStdId,
 }) async {
   final container = ProviderContainer(
     overrides: [
       sessionControllerProvider.overrideWith(_ReadySessionController.new),
       sessionRepositoryProvider.overrideWithValue(repository),
-      clubMemberRepositoryProvider.overrideWithValue(_StubMemberRepository(memberCount)),
+      clubMemberRepositoryProvider.overrideWithValue(
+        memberRepository ?? _StubMemberRepository(memberCount, myStdId: myStdId),
+      ),
       // 기본값은 **이미 저장된 유효한 PSK** — 대부분의 테스트는 PSK 흐름을
       // 보려는 게 아니다. 없는 경우는 그 테스트가 직접 빈 저장소를 준다.
       beaconPskStoreProvider.overrideWithValue(
@@ -746,6 +821,507 @@ void main() {
 
       expect(find.text('출석 현황을 불러오지 못했습니다'), findsOneWidget);
       expect(find.text('아직 출석 기록이 없습니다'), findsNothing);
+    });
+  });
+
+  group('멤버 관리', () {
+    // 세션 프로필의 학번. "나"를 목록에서 찾는 키다 — `GET /members/me`에
+    // `memberId`가 없어서 학번으로 잇는다.
+    const myStdId = '20250101';
+
+    ClubMember member({
+      required int id,
+      required String name,
+      ClubRole role = ClubRole.member,
+      String? part,
+      num? rate,
+      int? count,
+      String? stdId,
+    }) => ClubMember(
+      memberId: id,
+      name: name,
+      stdId: stdId ?? '2025000$id',
+      role: role,
+      part: part,
+      rate: rate,
+      attendanceCount: count,
+    );
+
+    /// 시트 안으로 한정한다 — 상단 바 제목("관리자")과 검색 입력의 내용도
+    /// `find.text`에 잡힌다.
+    Finder inSheet(String text) => find.descendant(
+      of: find.byType(MembersSheetContent),
+      matching: find.text(text),
+    );
+
+    testWidgets('웹 표의 여섯 열이 모바일 행에 모두 남는다', (tester) async {
+      // 웹(`356:1627`)은 이름·학번·역할(파트)·출석률·출석 횟수·제외 6열이다.
+      // 390px에 안 들어가므로 재배치했다 — 정보를 버리지는 않는다.
+      final repo = _ScriptedSessionRepository(sessions: []);
+      await _pumpAdmin(
+        tester,
+        repository: repo,
+        memberRepository: _StubMemberRepository(
+          0,
+          members: [member(id: 1, name: '강네모', part: '프론트엔드', rate: 100, count: 8)],
+        ),
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('강네모'), findsOneWidget);
+      expect(find.text('20250001'), findsOneWidget);
+      expect(find.text('프론트엔드'), findsOneWidget, reason: '웹의 "역할" 열은 파트다');
+      expect(find.text('100% · 8회'), findsOneWidget, reason: '출석률·횟수를 한 줄로');
+    });
+
+    testWidgets('관리자 배지는 관리자 행에만 붙는다', (tester) async {
+      // 역할을 바꾸려면 누가 이미 관리자인지 먼저 보여야 한다.
+      //
+      // 개수만 세면 조건이 뒤집혀도(`!= admin`) 통과한다 — 배지가 **어느 행**에
+      // 있는지를 본다.
+      final repo = _ScriptedSessionRepository(sessions: []);
+      await _pumpAdmin(
+        tester,
+        repository: repo,
+        memberRepository: _StubMemberRepository(
+          0,
+          members: [
+            member(id: 1, name: '강네모', role: ClubRole.admin),
+            member(id: 2, name: '박신한'),
+          ],
+        ),
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+
+      Finder rowOf(String name) =>
+          find.ancestor(of: find.text(name), matching: find.byType(InkWell));
+      expect(
+        find.descendant(of: rowOf('강네모'), matching: find.text('관리자')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: rowOf('박신한'), matching: find.text('관리자')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('검색어를 서버로 넘긴다', (tester) async {
+      // 잡아야 할 잘못된 구현: 받아 온 목록을 클라이언트에서만 거른다 —
+      // 서버가 페이지를 나눠 주면 첫 페이지 밖의 사람은 영영 못 찾는다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [member(id: 1, name: '강네모'), member(id: 2, name: '박신한')],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      memberRepo.searches.clear();
+
+      await tester.enterText(find.byType(TextField), '박신한');
+      // 디바운스를 **상수로 pump하지 않는다** — 상수를 늘려도 통과하게 된다.
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.searches, contains('박신한'));
+      // 검색 입력의 내용도 `find.text`에 잡히므로 목록 쪽만 본다.
+      expect(inSheet('20250002'), findsOneWidget, reason: '박신한의 학번');
+      expect(inSheet('강네모'), findsNothing);
+    });
+
+    testWidgets('타이핑 중에는 요청을 보내지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 디바운스가 없어 한 글자마다 요청이 나간다.
+      final memberRepo = _StubMemberRepository(0, members: [member(id: 1, name: '강네모')]);
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      memberRepo.searches.clear();
+
+      await tester.enterText(find.byType(TextField), '강');
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.enterText(find.byType(TextField), '강네');
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(memberRepo.searches, isEmpty, reason: '입력이 멎기 전에는 보내지 않는다');
+
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      expect(memberRepo.searches, hasLength(1), reason: '멎은 뒤 한 번만 보낸다');
+    });
+
+    testWidgets('액션 팝업을 닫아도 멤버 시트는 남는다', (tester) async {
+      // 잡아야 할 잘못된 구현: `closeAll()`로 닫는다. `OwnedRoutes`는 시트와
+      // 팝업을 **같은 목록 하나**에 담으므로, 팝업만 닫으려던 호출이 그
+      // 밑의 시트까지 닫아 관리자를 메인 화면으로 밀어낸다.
+      final memberRepo = _StubMemberRepository(0, members: [member(id: 1, name: '강네모')]);
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('강네모'));
+      await tester.pumpAndSettle();
+      expect(find.byType(MemberActionsPopupContent), findsOneWidget);
+
+      await tester.tap(find.text('닫기'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(MemberActionsPopupContent), findsNothing, reason: '팝업은 닫힌다');
+      expect(find.byType(MembersSheetContent), findsOneWidget, reason: '시트는 남아야 한다');
+    });
+
+    testWidgets('제외 확인에서 취소하면 멤버 시트로 돌아온다', (tester) async {
+      // 되돌릴 수 없는 동작을 그만두려고 누른 "취소"가 화면 전체를 닫으면,
+      // 관리자는 하던 일을 처음부터 다시 해야 한다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('동아리에서 제외'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('취소'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.removed, isEmpty);
+      expect(find.byType(MemberRemoveConfirmContent), findsNothing);
+      expect(find.byType(MembersSheetContent), findsOneWidget, reason: '시트로 돌아와야 한다');
+    });
+
+    testWidgets('역할 변경이 실패해도 멤버 시트는 남는다', (tester) async {
+      // 실패했으면 하던 자리로 되돌아가야 다시 시도할 수 있다. 시트까지
+      // 닫히면 토스트만 뜨고 관리자는 목록을 처음부터 다시 연다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+        failRoleUpdate: true,
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('관리자로'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('역할을 바꾸지 못했습니다.'), findsOneWidget);
+      expect(find.byType(MembersSheetContent), findsOneWidget, reason: '시트는 남아야 한다');
+    });
+
+    testWidgets('화면을 떠나면 디바운스 타이머가 남지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: dispose에서 `_searchDebounce`를 취소하지 않는다.
+      // 타이핑 직후 탭을 옮기면 죽은 화면의 타이머가 뒤늦게 깨어난다.
+      //
+      // 이 테스트는 `expect` 없이 실패한다 — 위젯 트리가 사라진 뒤에도
+      // 타이머가 남아 있으면 테스트 바인딩이 "A Timer is still pending"으로
+      // 직접 실패시킨다. 그게 관찰 지점이다.
+      final memberRepo = _StubMemberRepository(0, members: [member(id: 1, name: '강네모')]);
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '강');
+
+      // 디바운스가 아직 살아 있는 채로 화면을 걷어낸다.
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets('역할을 바꾸면 requesterId와 대상·새 역할을 보낸다', (tester) async {
+      // `requesterId`는 서버가 "누가 바꾸려 하는가"를 확인하는 값이다.
+      // `GET /members/me`에 `memberId`가 없어 목록에서 학번으로 찾는다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('관리자로'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.roleUpdates, [(9, 2, ClubRole.admin)]);
+    });
+
+    testWidgets('역할을 바꾸면 목록에 바로 반영된다', (tester) async {
+      // 잡아야 할 잘못된 구현: 요청만 보내고 목록을 다시 읽지 않는다 —
+      // 화면에는 옛 역할이 남아 있어 관리자가 두 번 누르게 된다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+
+      Finder rowOf(String name) =>
+          find.ancestor(of: find.text(name), matching: find.byType(InkWell));
+      expect(
+        find.descendant(of: rowOf('박신한'), matching: find.text('관리자')),
+        findsNothing,
+        reason: '바꾸기 전',
+      );
+
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('관리자로'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.descendant(of: rowOf('박신한'), matching: find.text('관리자')),
+        findsOneWidget,
+        reason: '바꾼 뒤 목록을 다시 읽어야 한다',
+      );
+    });
+
+    testWidgets('제외하면 목록에서 사라진다', (tester) async {
+      // 완료 조건: 제외가 성공하면 목록에 즉시 반영된다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('동아리에서 제외'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('제외'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('박신한'), findsNothing);
+      expect(find.text('나'), findsOneWidget, reason: '남은 사람은 그대로');
+    });
+
+    testWidgets('관리자를 누르면 강등한다', (tester) async {
+      // 잡아야 할 잘못된 구현: 현재 역할과 무관하게 늘 ADMIN을 보낸다 —
+      // 승격만 테스트하면 통과해 버린다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한', role: ClubRole.admin),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('일반 부원으로'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.roleUpdates, [(9, 2, ClubRole.member)]);
+    });
+
+    testWidgets('검색으로 내가 목록에서 사라져도 requesterId를 잃지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 목록을 받을 때마다 `_myMemberId`를 덮어쓴다
+      // (`??=` 대신 `=`). 걸러진 목록에 내가 없으면 null이 되고, 그 뒤로는
+      // 역할을 못 바꾼다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField), '박신한');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('박신한').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('관리자로'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.roleUpdates, [(9, 2, ClubRole.admin)]);
+    });
+
+    testWidgets('자기 자신은 역할을 바꾸거나 제외할 수 없다', (tester) async {
+      // 관리자가 스스로를 강등하거나 제외하면 그 동아리에 관리자가 없어질
+      // 수 있고, 되돌릴 방법이 앱 안에 없다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId)],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('나'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('자기 자신의 역할은 바꾸거나 제외할 수 없습니다.'), findsOneWidget);
+      expect(find.text('동아리에서 제외'), findsNothing);
+      expect(find.text('일반 부원으로'), findsNothing);
+    });
+
+    testWidgets('내가 누구인지 모르면 제외를 시작하지 않는다', (tester) async {
+      // `isSelf`는 `_myMemberId`가 null이면 무조건 false가 되어, 자기 행에도
+      // 제외 버튼이 그대로 보인다. 누가 나인지 모르는 채로 되돌릴 수 없는
+      // 삭제를 보내면 관리자가 스스로를 지울 수 있다.
+      //
+      // 목록에 세션 프로필과 같은 학번이 하나도 없으면 이 상태가 된다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [member(id: 2, name: '박신한')],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('동아리에서 제외'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(MemberRemoveConfirmContent), findsNothing, reason: '확인조차 열지 않는다');
+      expect(memberRepo.removed, isEmpty);
+      expect(find.text('내 정보를 확인하지 못했습니다.'), findsOneWidget, reason: '왜 막혔는지 알려준다');
+    });
+
+    testWidgets('내가 누구인지 모르면 역할도 바꾸지 않는다', (tester) async {
+      // [_toggleRole]과 [_confirmRemoveMember]의 방어가 같아야 한다 — 한쪽만
+      // 막으면 다른 쪽으로 같은 사고가 난다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [member(id: 2, name: '박신한')],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('관리자로'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.roleUpdates, isEmpty);
+      expect(find.text('내 정보를 확인하지 못했습니다.'), findsOneWidget);
+    });
+
+    testWidgets('제외는 확인을 받은 뒤에만 보낸다', (tester) async {
+      // 잡아야 할 잘못된 구현: 확인 없이 곧장 지운다 — 출석 기록까지 사라지고
+      // 되돌릴 수 없다.
+      final memberRepo = _StubMemberRepository(
+        0,
+        members: [
+          member(id: 9, name: '나', role: ClubRole.admin, stdId: myStdId),
+          member(id: 2, name: '박신한'),
+        ],
+      );
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('박신한'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('동아리에서 제외'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.removed, isEmpty, reason: '확인 전에는 지우지 않는다');
+      expect(find.text('멤버 제외'), findsOneWidget);
+
+      await tester.tap(find.text('제외'));
+      await tester.pumpAndSettle();
+
+      expect(memberRepo.removed, [2]);
     });
   });
 

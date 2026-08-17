@@ -75,6 +75,19 @@ class OwnedRoutes {
   /// 지금 소유 중인 것을 전부 즉시 닫는다.
   void closeAll() => removeAll(take());
 
+  /// 소유한 것 중 **맨 위 하나**만 닫는다.
+  ///
+  /// 시트 위에 팝업을 얹는 화면이 필요로 한다. [closeAll]을 쓰면 팝업만
+  /// 닫으려던 호출이 그 밑의 시트까지 닫는다.
+  ///
+  /// `remove(take().last)`로 흉내 내면 안 된다 — [take]가 추적을 통째로
+  /// 비워서 밑의 시트가 **주인 없는 라우트**가 되고, 화면을 떠날 때
+  /// [closeAll]이 그걸 못 닫아 다음 탭 위에 그대로 남는다(#41과 같은 결함).
+  void closeTop() {
+    if (_routes.isEmpty) return;
+    remove(_routes.last);
+  }
+
   /// 특정 라우트 하나만 닫는다.
   void remove(Route<void> route) {
     _routes.remove(route);
