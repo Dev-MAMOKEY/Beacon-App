@@ -161,4 +161,18 @@ void main() {
       );
     });
   });
+
+  test('updateFcmToken은 fcmToken 하나만 담아 PATCH한다', () async {
+    // 잡아야 할 잘못된 구현: 필드명을 `token`으로 보내거나(서버 required는
+    // `fcmToken`이다), 엉뚱한 경로로 보낸다. `needsExactBody: true`라 본문이
+    // 다르면 매칭 자체가 실패한다.
+    adapter.onPatch(
+      '/members/me/fcm-token',
+      (server) => server.reply(200, {'success': true, 'data': null}),
+      data: {'fcmToken': 'abc-123'},
+    );
+
+    await expectLater(repository.updateFcmToken('abc-123'), completes);
+  });
+
 }

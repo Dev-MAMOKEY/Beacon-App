@@ -60,6 +60,14 @@ class _ThrowingProfileRepository extends _RecordingProfileRepository {
 
 /// 호출 인자를 전부 기록하고, 성패를 테스트가 정할 수 있는 페이크.
 class _RecordingProfileRepository implements ProfileRepository {
+
+  final List<String> fcmTokens = [];
+
+  @override
+  Future<void> updateFcmToken(String token) async {
+    fcmTokens.add(token);
+  }
+
   _RecordingProfileRepository({this.updateFailure});
 
   /// null이 아니면 [updateProfile]이 이 예외로 끝난다. 토글 실패 시나리오가

@@ -9,6 +9,14 @@
 # packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    # iOS 빌드가 SwiftPM으로 받아 둔 플러그인 소스에는 각 플러그인의
+    # `example/` 앱이 통째로 들어 있다. 그건 우리 코드가 아니고, 우리가
+    # 설치하지 않은 의존성(`flutter_local_notifications` 등)을 import해서
+    # `flutter analyze`를 오류로 채운다. `build/`는 이미 gitignore다.
+    - build/**
+
 linter:
   # The lint rules applied to this project can be customized in the
   # section below to disable rules from the `package:flutter_lints/flutter.yaml`

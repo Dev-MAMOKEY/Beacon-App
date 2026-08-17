@@ -18,6 +18,13 @@ abstract interface class ProfileRepository {
     bool? pushEnabled,
   });
 
+  /// `PATCH /members/me/fcm-token`. 발급·갱신된 FCM 토큰을 서버에 등록한다.
+  ///
+  /// 실패해도 앱의 다른 기능은 그대로 동작한다 — 알림만 못 받는다. 그래서
+  /// 호출부가 조용히 삼키는데, **그만큼 토큰이 실제로 등록됐는지 확인할
+  /// 방법이 앱 안에 없다.** 이 메서드 자체는 테스트로 고정한다.
+  Future<void> updateFcmToken(String token);
+
   /// `PATCH /members/me/password`. 서버가 현재 비밀번호를 검증하고
   /// **다른 기기의** refresh token만 무효화한다 — 이 기기의 세션은 유지된다.
   Future<void> changePassword({
@@ -46,6 +53,15 @@ class HttpProfileRepository implements ProfileRepository {
         'title': ?title,
         'pushEnabled': ?pushEnabled,
       },
+      parse: (_) {},
+    );
+  }
+
+  @override
+  Future<void> updateFcmToken(String token) {
+    return _client.patch<void>(
+      '/members/me/fcm-token',
+      body: {'fcmToken': token},
       parse: (_) {},
     );
   }
