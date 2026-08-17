@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/admin/presentation/admin_role_controller.dart';
+import '../../features/admin/presentation/admin_screen.dart';
 import '../../features/attendance/presentation/home_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_controller.dart';
@@ -14,7 +15,6 @@ import '../../features/club/presentation/invite_code_screen.dart';
 import '../../features/profile/presentation/profile_screen.dart';
 import '../../features/records/presentation/records_screen.dart';
 import '../../features/shell/presentation/app_shell.dart';
-import '../theme/app_colors.dart';
 
 abstract final class AppRoutes {
   static const String splash = '/';
@@ -270,8 +270,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: AppRoutes.admin,
-                builder: (context, state) =>
-                    const _Placeholder(message: '관리자 화면은 Phase 3에서 구현합니다'),
+                builder: (context, state) => const AdminScreen(),
               ),
             ],
           ),
@@ -303,17 +302,3 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
 /// 남은 자리표시자는 관리자 화면(Phase 3) 하나다 — 마이페이지·비밀번호
 /// 변경은 #13에서 실제 화면·팝업으로 교체됐다.
-class _Placeholder extends StatelessWidget {
-  const _Placeholder({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: Center(child: Text(message)),
-    );
-  }
-}
