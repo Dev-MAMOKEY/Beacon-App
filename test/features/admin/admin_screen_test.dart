@@ -950,6 +950,28 @@ void main() {
       expect(memberRepo.searches, hasLength(1), reason: '멎은 뒤 한 번만 보낸다');
     });
 
+    testWidgets('화면을 떠나면 디바운스 타이머가 남지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: dispose에서 `_searchDebounce`를 취소하지 않는다.
+      // 타이핑 직후 탭을 옮기면 죽은 화면의 타이머가 뒤늦게 깨어난다.
+      //
+      // 이 테스트는 `expect` 없이 실패한다 — 위젯 트리가 사라진 뒤에도
+      // 타이머가 남아 있으면 테스트 바인딩이 "A Timer is still pending"으로
+      // 직접 실패시킨다. 그게 관찰 지점이다.
+      final memberRepo = _StubMemberRepository(0, members: [member(id: 1, name: '강네모')]);
+      await _pumpAdmin(
+        tester,
+        repository: _ScriptedSessionRepository(sessions: []),
+        memberRepository: memberRepo,
+      );
+
+      await tester.tap(find.text('멤버'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '강');
+
+      // 디바운스가 아직 살아 있는 채로 화면을 걷어낸다.
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('역할을 바꾸면 requesterId와 대상·새 역할을 보낸다', (tester) async {
       // `requesterId`는 서버가 "누가 바꾸려 하는가"를 확인하는 값이다.
       // `GET /members/me`에 `memberId`가 없어 목록에서 학번으로 찾는다.
