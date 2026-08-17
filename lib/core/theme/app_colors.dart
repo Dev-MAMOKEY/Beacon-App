@@ -17,6 +17,8 @@ class AppColors extends ThemeExtension<AppColors> {
     required this.green,
     required this.disconnectedGlow,
     required this.scrim,
+    required this.sessionActiveBadge,
+    required this.sessionEndedMeta,
     required this.label,
     required this.attendancePresent,
     required this.attendanceLate,
@@ -52,6 +54,15 @@ class AppColors extends ThemeExtension<AppColors> {
   /// 직접 쓰던 자리다. 알파 0.4 = 0x66.
   final Color scrim;
 
+  /// 관리자 화면(`353:2033`)의 "진행 중" 배지 글자색(`#005BBF`). `main`보다
+  /// 어두운 파랑이라 `bg` 배경 위에서 대비가 선다 — 기존 토큰 중에는 같은
+  /// 값이 없어 새로 뒀다.
+  final Color sessionActiveBadge;
+
+  /// 종료된 세션 카드의 출석인원 글자색(`#424242`). `gray3`(`#414754`)와
+  /// 비슷해 보이지만 파란기가 없는 중립 회색이라 실측값이 다르다.
+  final Color sessionEndedMeta;
+
   final Color label;
 
   /// 기록 캘린더(#12)의 날짜 배지 4종. Figma 컴포넌트 "날짜"(`289:2875`)의
@@ -86,6 +97,8 @@ class AppColors extends ThemeExtension<AppColors> {
     gray4: Color(0xFFE7E8E9),
     yellow: Color(0xFFFBBF24),
     red: Color(0xFFFF5D5D),
+    sessionActiveBadge: Color(0xFF005BBF),
+    sessionEndedMeta: Color(0xFF424242),
     green: Color(0xFF16CE69),
     disconnectedGlow: Color(0xFF94A8BD),
     scrim: Color(0x66000000),
@@ -111,6 +124,8 @@ class AppColors extends ThemeExtension<AppColors> {
     Color? green,
     Color? disconnectedGlow,
     Color? scrim,
+    Color? sessionActiveBadge,
+    Color? sessionEndedMeta,
     Color? label,
     Color? attendancePresent,
     Color? attendanceLate,
@@ -131,6 +146,8 @@ class AppColors extends ThemeExtension<AppColors> {
       green: green ?? this.green,
       disconnectedGlow: disconnectedGlow ?? this.disconnectedGlow,
       scrim: scrim ?? this.scrim,
+      sessionActiveBadge: sessionActiveBadge ?? this.sessionActiveBadge,
+      sessionEndedMeta: sessionEndedMeta ?? this.sessionEndedMeta,
       label: label ?? this.label,
       attendancePresent: attendancePresent ?? this.attendancePresent,
       attendanceLate: attendanceLate ?? this.attendanceLate,
@@ -156,6 +173,8 @@ class AppColors extends ThemeExtension<AppColors> {
       green: Color.lerp(green, other.green, t)!,
       disconnectedGlow: Color.lerp(disconnectedGlow, other.disconnectedGlow, t)!,
       scrim: Color.lerp(scrim, other.scrim, t)!,
+      sessionActiveBadge: Color.lerp(sessionActiveBadge, other.sessionActiveBadge, t)!,
+      sessionEndedMeta: Color.lerp(sessionEndedMeta, other.sessionEndedMeta, t)!,
       label: Color.lerp(label, other.label, t)!,
       attendancePresent: Color.lerp(attendancePresent, other.attendancePresent, t)!,
       attendanceLate: Color.lerp(attendanceLate, other.attendanceLate, t)!,

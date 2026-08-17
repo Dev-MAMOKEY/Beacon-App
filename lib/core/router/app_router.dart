@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/admin/presentation/admin_role_controller.dart';
+import '../../features/admin/presentation/admin_screen.dart';
 import '../../features/attendance/presentation/home_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_controller.dart';
@@ -13,7 +15,6 @@ import '../../features/club/presentation/invite_code_screen.dart';
 import '../../features/profile/presentation/profile_screen.dart';
 import '../../features/records/presentation/records_screen.dart';
 import '../../features/shell/presentation/app_shell.dart';
-import '../theme/app_colors.dart';
 
 abstract final class AppRoutes {
   static const String splash = '/';
@@ -36,14 +37,20 @@ abstract final class AppRoutes {
 /// 1:1로 대응한다 — 순서를 바꾸면 양쪽을 함께 바꿔야 한다.
 enum AppTab { home, records, admin, profile }
 
-/// 관리자 탭은 `role == ADMIN`일 때만 노출해야 하지만, `GET /members/me`
-/// (`MemberProfile`)에는 role이 없다 — role은 `GET /clubs/{clubId}/members`의
-/// `ClubMemberResponse.role`에만 있다. 그 목록 조회를 이 태스크에서 새로
-/// 끌어오는 대신, 관리자 화면이 실제로 존재하는 Phase 3까지 이 Provider는
-/// 항상 false를 돌려준다 — 관리자 탭은 숨겨지고 `/admin` 진입도 차단된다.
-/// Phase 3는 이 Provider를 실제 role 조회 결과로 override하기만 하면 된다.
-/// (이슈 #34 결정 사항)
-final showAdminTabProvider = Provider<bool>((ref) => false);
+/// 관리자 탭을 노출할지. `role == ADMIN`일 때만 참이다.
+///
+/// `GET /members/me`(`MemberProfile`)에는 role이 없어서 `GET /clubs/{clubId}
+/// /members`의 항목에서 학번으로 나를 찾아 읽는다([isClubAdminProvider]).
+/// Phase 2까지는 관리자 화면 자체가 없어 항상 false였고, #34가 "Phase 3는 이
+/// Provider를 실제 role 조회 결과로 override하기만 하면 된다"고 적어 뒀다 —
+/// #14에서 그 연결을 했다.
+///
+/// **아직 확인되지 않았으면 false다.** 조회가 끝나기 전이나 실패한 뒤에
+/// 탭을 열어 주면, 부원에게 세션 시작·종료 버튼을 보여준 뒤 서버가 403으로
+/// 거절하는 모습이 된다.
+final showAdminTabProvider = Provider<bool>((ref) {
+  return ref.watch(isClubAdminProvider).value ?? false;
+});
 
 /// `SessionReady` 상태에서 허용하는 위치 집합 — 하단 탭 셸에 실제로
 /// 등록된 4개 경로(탭 4개)와 정확히 일치해야 한다.
@@ -263,8 +270,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: AppRoutes.admin,
-                builder: (context, state) =>
-                    const _Placeholder(message: '관리자 화면은 Phase 3에서 구현합니다'),
+                builder: (context, state) => const AdminScreen(),
               ),
             ],
           ),
@@ -296,17 +302,3 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
 /// 남은 자리표시자는 관리자 화면(Phase 3) 하나다 — 마이페이지·비밀번호
 /// 변경은 #13에서 실제 화면·팝업으로 교체됐다.
-class _Placeholder extends StatelessWidget {
-  const _Placeholder({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<AppColors>()!;
-    return ColoredBox(
-      color: colors.bg,
-      child: Center(child: Text(message)),
-    );
-  }
-}

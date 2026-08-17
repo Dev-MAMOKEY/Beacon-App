@@ -103,6 +103,8 @@ AppColors _distinctColors() {
     green: next(),
     disconnectedGlow: next(),
     scrim: next(),
+    sessionActiveBadge: next(),
+    sessionEndedMeta: next(),
     label: next(),
     attendancePresent: next(),
     attendanceLate: next(),

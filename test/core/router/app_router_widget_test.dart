@@ -1,6 +1,7 @@
 import 'package:beacon_app/components/nav/app_top_bar.dart';
 import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/router/app_router.dart';
+import 'package:beacon_app/features/admin/presentation/admin_screen.dart';
 import 'package:beacon_app/core/storage/token_store.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
 import 'package:beacon_app/features/attendance/data/attendance_dto.dart';
@@ -686,7 +687,7 @@ void main() {
 
     router.go(AppRoutes.admin);
     await tester.pumpAndSettle();
-    expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsOneWidget);
+    expect(find.byType(AdminScreen), findsOneWidget);
 
     router.go(AppRoutes.profile);
     await tester.pumpAndSettle();
@@ -802,7 +803,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(HomeScreen), findsOneWidget);
-    expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
+    expect(find.byType(AdminScreen), findsNothing);
   });
 
   // Codex가 찾은 결함: 라우터의 refreshListenable(_SessionListenable)이
@@ -846,7 +847,7 @@ void main() {
 
       router.go(AppRoutes.admin);
       await tester.pumpAndSettle();
-      expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsOneWidget);
+      expect(find.byType(AdminScreen), findsOneWidget);
 
       // 여기서부터가 핵심이다 — router.go/push를 전혀 부르지 않는다.
       // provider override만 바꾼다(Phase 3의 실제 role 회수를 흉내낸다).
@@ -859,7 +860,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(HomeScreen), findsOneWidget);
-      expect(find.text('관리자 화면은 Phase 3에서 구현합니다'), findsNothing);
+      expect(find.byType(AdminScreen), findsNothing);
     },
   );
 
