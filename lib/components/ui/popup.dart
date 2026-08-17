@@ -74,23 +74,3 @@ DialogRoute<T> buildAppPopupRoute<T>({
     ),
   );
 }
-
-/// [AppPopupCard]를 다이얼로그 라우트로 띄운다. 확인을 누르면 스스로
-/// 닫히는 일회성 팝업이 쓴다 — 라우트 정체성이 필요한 상태 기반 팝업은
-/// [buildAppPopupRoute]로 라우트를 직접 만들어 소유한다
-/// (`home_screen.dart`).
-Future<T?> showAppPopup<T>({
-  required BuildContext context,
-  required WidgetBuilder builder,
-  bool barrierDismissible = false,
-}) {
-  final navigator = appPopupNavigatorOf(context);
-  return navigator.push<T>(
-    buildAppPopupRoute<T>(
-      context: context,
-      navigator: navigator,
-      builder: builder,
-      barrierDismissible: barrierDismissible,
-    ),
-  );
-}

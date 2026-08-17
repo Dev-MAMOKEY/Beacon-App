@@ -2,35 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 
-/// 프로젝트 공용 바텀시트 프리미티브.
-///
-/// #11(출석 완료 표시)이 이 파일을 만들었지만, 그 화면은 최종적으로 Figma
-/// `339:1705`("출석완료 팝업창" — 화면 중앙 카드)를 따르기로 하면서
-/// `lib/components/ui/popup.dart` 쪽으로 옮겨 갔다. 그래서 **이 파일의 첫
-/// 실사용처는 #12(기록 캘린더의 날짜 상세)다** — "출석 완료 시트가 쓰고
-/// 있다"는 설명은 낡았다(`git grep showAppSheet`로 확인했다).
-///
-/// `showModalBottomSheet`를 얇게 감싸기만 한다 — 배경색·모서리 반경·핸들
-/// 인디케이터처럼 화면마다 반복될 장식만 여기서 표준화하고, 내용은 전부
-/// 호출부의 [child]에 맡긴다.
-Future<T?> showAppSheet<T>({
-  required BuildContext context,
-  required WidgetBuilder builder,
-  bool isDismissible = true,
-  bool enableDrag = true,
-}) {
-  final navigator = appSheetNavigatorOf(context);
-  return navigator.push<T>(
-    buildAppSheetRoute<T>(
-      context: context,
-      navigator: navigator,
-      builder: builder,
-      isDismissible: isDismissible,
-      enableDrag: enableDrag,
-    ),
-  );
-}
-
 /// 바텀시트도 팝업과 같은 이유로 **루트** 내비게이터에 붙어야 한다 —
 /// 중첩 내비게이터(하단 탭 셸 안)에 붙으면 스크림이 상단 바·하단 탭 바를
 /// 덮지 못하고 탭이 그대로 눌린다(`popup.dart`의 `appPopupNavigatorOf` 주석

@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../domain/beacon_scanner.dart';
+import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 
 /// 화면·컨트롤러 테스트가 안정화 판정 없이 상태 시퀀스를 직접 스크립트할 수
 /// 있게 해주는 테스트 더블. 안정화·블루투스 재연결·UUID 필터링 같은 실제

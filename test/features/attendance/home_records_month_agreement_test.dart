@@ -6,7 +6,7 @@ import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
-import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
+import '../../support/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/data/flutter_beacon_scanner.dart'
     show beaconScannerProvider;
 import 'package:beacon_app/features/records/data/records_dto.dart';

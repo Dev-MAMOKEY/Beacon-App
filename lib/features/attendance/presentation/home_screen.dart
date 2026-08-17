@@ -25,7 +25,7 @@ import '../../records/data/records_repository.dart';
 import '../data/attendance_dto.dart';
 import '../data/attendance_repository.dart';
 import 'attendance_controller.dart';
-import 'attendance_success_sheet.dart';
+import 'attendance_success_popup.dart';
 
 /// Figma 실측(339:1498/326:1569 "환영인사 텍스트") — 연도·월·일을 모두
 /// 2자리로 채운 "YYYY년 MM월 DD일" 형식이고 요일이 없다. 최초 구현은

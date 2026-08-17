@@ -1,4 +1,4 @@
-import 'package:beacon_app/features/beacon/data/fake_beacon_scanner.dart';
+import '../../support/fake_beacon_scanner.dart';
 import 'package:beacon_app/features/beacon/domain/beacon_scanner.dart';
 import 'package:flutter_test/flutter_test.dart';
 

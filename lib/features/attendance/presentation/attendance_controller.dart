@@ -12,13 +12,9 @@ sealed class CheckInResult {
 }
 
 class CheckInSuccess extends CheckInResult {
-  const CheckInSuccess(this.status, this.checkedAt);
+  const CheckInSuccess(this.status);
 
   final AttendanceStatus status;
-
-  /// checkIn API는 상태만 돌려주고 처리 시각을 돌려주지 않는다 —
-  /// 성공 응답을 받은 이 순간을 처리 시각으로 쓴다.
-  final DateTime checkedAt;
 }
 
 class CheckInInvalidCode extends CheckInResult {
@@ -106,7 +102,7 @@ class AttendanceController {
         sessionId: sessionId,
         otpCode: otpCode,
       );
-      return CheckInSuccess(status, DateTime.now());
+      return CheckInSuccess(status);
     } on ApiException catch (error) {
       switch (error.code) {
         case ErrorCode.invalidAttendanceCode:
