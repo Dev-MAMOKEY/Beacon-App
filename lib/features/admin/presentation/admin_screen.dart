@@ -8,17 +8,34 @@ import '../../../components/ui/app_logo.dart';
 import '../../../components/ui/button.dart';
 import '../../../components/ui/owned_routes.dart';
 import '../../../components/ui/popup.dart';
+import '../../../components/ui/sheet.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../auth/presentation/session_controller.dart';
+import '../data/attendance_admin_dto.dart';
 import '../data/beacon_psk_store.dart';
+import '../data/club_member_repository.dart';
 import '../data/session_dto.dart';
 import '../data/session_repository.dart';
 import 'admin_role_controller.dart';
 import 'admin_session_card.dart';
+import 'attendance_status_popup.dart';
+import 'attendance_status_sheet.dart';
 import 'beacon_psk_popup.dart';
+import 'manual_attendance_popup.dart';
 import 'session_form_popup.dart';
+
+/// 출석 현황 시트가 열려 있는 동안 목록을 다시 조회하는 간격.
+///
+/// 명세서가 MVP는 SSE가 아니라 **폴링 우선**으로 규정한다(#16). 30초인 이유:
+/// 관리자는 부원이 하나씩 찍히는 것을 보고 있으므로 이보다 길면 "안 되는
+/// 건가" 싶어지고, 더 짧으면 세션 하나에 요청이 계속 쌓인다.
+///
+/// **`ACTIVE` 세션에서만 돈다.** 끝난 세션의 출석 기록은 더 바뀌지 않으므로
+/// 폴링은 그대로 낭비다.
+@visibleForTesting
+const Duration attendanceRefreshInterval = Duration(seconds: 30);
 
 /// 관리자 세션 관리 화면(Figma `353:2033` "관리자 페이지").
 ///
@@ -66,6 +83,8 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   @override
   void dispose() {
     _generation++;
+    _stopAttendancePolling();
+    _attendanceState.dispose();
     _owned.closeAll();
     super.dispose();
   }
@@ -78,6 +97,8 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     _visible = visible;
     _owned.visible = visible;
     if (!visible) {
+      _stopAttendancePolling();
+      _attendanceSession = null;
       // 탭을 떠나면 열려 있던 폼을 닫는다 — 남겨 두면 다음 탭 위에 뜬다.
       final routes = _owned.take();
       WidgetsBinding.instance.addPostFrameCallback((_) => _owned.removeAll(routes));
@@ -168,6 +189,162 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   /// 받아들여지므로 관리자에게 직접 받아 이 기기에만 저장한다. 관리자 설정
   /// 화면(#18)이 웹 전용이라 갈 곳이 없고, **PSK가 실제로 쓰이는 유일한
   /// 순간**이 여기다.
+  /// 출석 현황 폴링 타이머. 시트가 닫히면 멈춘다.
+  Timer? _attendanceTimer;
+
+  /// 열려 있는 출석 현황 시트가 보고 있는 세션과 그 기록.
+  ///
+  /// 시트 안에서 상태를 바꾸면 목록이 즉시 갱신돼야 한다 — 다시 열게 하면
+  /// 관리자가 바뀌었는지 확인할 방법이 없다.
+  AdminSession? _attendanceSession;
+
+  /// 시트는 **별도 라우트 서브트리**라 이 화면의 `setState`로는 다시 그려지지
+  /// 않는다 — 기록 화면이 세션 상세 시트에 쓰는 것과 같은 방식으로,
+  /// 시트가 구독할 수 있는 notifier에 담는다.
+  final ValueNotifier<({List<AdminAttendanceRecord> records, bool loading, bool failed})>
+  _attendanceState = ValueNotifier((records: const [], loading: false, failed: false));
+
+  /// 세션의 출석 현황을 시트로 연다.
+  ///
+  /// 화면이 아니라 시트인 이유: 라우터의 `readyAllowedLocations`가 정확
+  /// 일치로 판정해서 `/admin/sessions/:id/attendance` 같은 파라미터 경로를
+  /// 그대로 받지 못한다. 기록 화면이 세션 상세에 쓰는 시트 패턴을 따랐다.
+  void _openAttendance(int clubId, AdminSession session) {
+    _attendanceSession = session;
+    _attendanceState.value = (records: const [], loading: true, failed: false);
+    _startAttendancePolling(clubId, session);
+
+    _owned.push(
+      buildAppSheetRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => ListenableBuilder(
+          listenable: _attendanceState,
+          builder: (context, _) {
+            final state = _attendanceState.value;
+            return AttendanceStatusSheetContent(
+              sessionName: session.sessionName,
+              records: state.records,
+              isLoading: state.loading,
+              loadFailed: state.failed,
+              onTapRecord: (record) => _openStatusChange(clubId, session, record),
+              onAddManual: () => _openManualAttendance(clubId, session),
+            );
+          },
+        ),
+      ),
+    );
+    unawaited(_loadAttendance(clubId, session));
+  }
+
+  /// `ACTIVE` 세션에 대해서만 폴링을 건다.
+  void _startAttendancePolling(int clubId, AdminSession session) {
+    _stopAttendancePolling();
+    if (session.status != SessionStatus.active) return;
+    _attendanceTimer = Timer.periodic(attendanceRefreshInterval, (_) {
+      // 시트가 닫혔거나 다른 세션으로 바뀌었으면 멈춘다.
+      if (!mounted || _attendanceSession?.sessionId != session.sessionId) {
+        _stopAttendancePolling();
+        return;
+      }
+      unawaited(_loadAttendance(clubId, session, silent: true));
+    });
+  }
+
+  void _stopAttendancePolling() {
+    _attendanceTimer?.cancel();
+    _attendanceTimer = null;
+  }
+
+  /// [silent]면 로딩 표시로 되돌리지 않는다 — 폴링 때마다 목록이 스피너로
+  /// 깜빡이면 관리자가 읽고 있던 줄을 놓친다.
+  Future<void> _loadAttendance(
+    int clubId,
+    AdminSession session, {
+    bool silent = false,
+  }) async {
+    try {
+      final records = await ref
+          .read(sessionRepositoryProvider)
+          .fetchAttendance(clubId: clubId, sessionId: session.sessionId);
+      if (!mounted || _attendanceSession?.sessionId != session.sessionId) return;
+      _attendanceState.value = (records: records, loading: false, failed: false);
+    } catch (_) {
+      if (!mounted || _attendanceSession?.sessionId != session.sessionId) return;
+      // 폴링 중 일시적 실패로 이미 보고 있던 목록을 지우지 않는다 — 다음
+      // 주기에 회복한다.
+      if (silent) return;
+      _attendanceState.value = (records: const [], loading: false, failed: true);
+    }
+  }
+
+  /// 아직 기록이 없는 부원만 골라 손으로 출석 처리한다.
+  Future<void> _openManualAttendance(int clubId, AdminSession session) async {
+    List<ClubMember> members;
+    try {
+      members = await ref.read(clubMemberRepositoryProvider).fetchMembers(clubId);
+    } catch (_) {
+      if (!mounted || !_visible) return;
+      showAppToast(context, '부원 목록을 불러오지 못했습니다.');
+      return;
+    }
+    if (!mounted) return;
+
+    // 이미 기록이 있는 부원은 후보에서 뺀다 — 그건 상태 변경으로 할 일이고,
+    // 여기서 또 넣으면 서버가 중복으로 거절하거나 기존 기록을 덮어쓴다.
+    final recorded = _attendanceState.value.records.map((record) => record.memberId).toSet();
+    final candidates = members.where((member) => !recorded.contains(member.memberId)).toList();
+
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => ManualAttendancePopupContent(
+          candidates: candidates,
+          onCancel: _owned.closeAll,
+          onSubmit: (memberId, status) async {
+            await ref.read(sessionRepositoryProvider).addManualAttendance(
+              clubId: clubId,
+              sessionId: session.sessionId,
+              memberId: memberId,
+              status: status,
+            );
+            if (!mounted) return;
+            _owned.closeAll();
+            _openAttendance(clubId, session);
+          },
+        ),
+      ),
+    );
+  }
+
+  void _openStatusChange(int clubId, AdminSession session, AdminAttendanceRecord record) {
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => AttendanceStatusPopupContent(
+          record: record,
+          onCancel: () => _owned.remove(_owned.take().last),
+          onSubmit: (status, note) async {
+            await ref.read(sessionRepositoryProvider).updateAttendanceStatus(
+              clubId: clubId,
+              sessionId: session.sessionId,
+              recordId: record.recordId,
+              status: status,
+              adminNote: note,
+            );
+            if (!mounted) return;
+            _owned.closeAll();
+            // 시트를 다시 열어 갱신된 목록을 보여준다 — 닫아 버리면 관리자가
+            // 바뀌었는지 확인할 방법이 없다.
+            _openAttendance(clubId, session);
+          },
+        ),
+      ),
+    );
+  }
+
   Future<void> _ensurePsk(int clubId, AdminSession session) async {
     final store = ref.read(beaconPskStoreProvider);
     String? existing;
@@ -265,6 +442,10 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         navigator: _rootNavigator,
         builder: (context) => _SessionActionsContent(
           sessionName: session.sessionName,
+          onAttendance: () {
+            _owned.closeAll();
+            _openAttendance(clubId, session);
+          },
           onEdit: () {
             _owned.closeAll();
             _openForm(clubId, initial: session);
@@ -360,6 +541,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
                             onEnd: clubId == null
                                 ? () {}
                                 : () => unawaited(_endSession(clubId, item)),
+                            onTap: clubId == null ? () {} : () => _openActions(clubId, item),
                           );
                         }
                         return EndedSessionCard(
@@ -472,12 +654,14 @@ class _CreateSessionButton extends StatelessWidget {
 class _SessionActionsContent extends StatelessWidget {
   const _SessionActionsContent({
     required this.sessionName,
+    required this.onAttendance,
     required this.onEdit,
     required this.onDelete,
     required this.onCancel,
   });
 
   final String sessionName;
+  final VoidCallback onAttendance;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onCancel;
@@ -497,6 +681,8 @@ class _SessionActionsContent extends StatelessWidget {
           style: typography.title4.copyWith(color: colors.gray3),
         ),
         const SizedBox(height: 24),
+        AppButton(label: '출석 현황', size: ButtonSize.md, onPressed: onAttendance),
+        const SizedBox(height: 12),
         AppButton(label: '수정하기', size: ButtonSize.md, onPressed: onEdit),
         const SizedBox(height: 12),
         AppButton.destructive(label: '삭제하기', size: ButtonSize.md, onPressed: onDelete),
