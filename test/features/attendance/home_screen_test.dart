@@ -1242,6 +1242,36 @@ void main() {
       expect(find.text('2'), findsNothing, reason: '실패했으면 옛 수치를 지워야 한다');
     });
 
+    testWidgets('같은 달 안에서 재조회가 실패해도 이전 수치를 지운다', (tester) async {
+      // 잡아야 할 잘못된 구현: `catch`에서 `_records = null`을 빼먹는다.
+      //
+      // 기존 테스트는 **자정을 넘긴 뒤** 실패시키는데, 그러면 월 불일치 검사
+      // (`_recordsForCurrentMonth`)가 이미 대시로 떨어뜨려 두 구현이 같은
+      // 결과를 낸다 — 같은 달 안에서 실패해야 갈린다(#63).
+      final records = _RecordingRecordsRepository(present: 7, late: 2, absent: 1);
+      final (container: _, routes: _, :visible) = await _pumpHome(
+        tester,
+        scanner: FakeBeaconScanner(),
+        attendanceRepository: _ScriptedAttendanceRepository(activeSession: _activeSession),
+        recordsRepository: records,
+        clock: () => DateTime.utc(2026, 8, 10, 3),
+      );
+      expect(find.text('2'), findsOneWidget, reason: '사전 조건: 지각 2회가 보인다');
+
+      // 달을 넘기지 않고 탭만 떠났다 돌아온다 — 재조회가 실패한다.
+      records.shouldThrow = true;
+      visible.value = false;
+      await tester.pumpAndSettle();
+      visible.value = true;
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 1)));
+        await tester.pumpAndSettle();
+      }
+
+      expect(records.requested, [(2026, 8), (2026, 8)], reason: '같은 달을 다시 조회했다');
+      expect(find.text('2'), findsNothing, reason: '실패했으면 옛 수치를 지워야 한다');
+    });
+
     testWidgets('주입하지 않으면 프로덕션 기본 시계를 쓴다', (tester) async {
       // 잡아야 할 잘못된 구현: 기본 시계를 엉뚱한 값으로 둔다. 모든 테스트가
       // clock을 주입하므로 프로덕션 기본값(`DateTime.now`)은 한 번도 검증되지
@@ -1340,6 +1370,37 @@ void main() {
 
       expect(find.text('출석코드 입력'), findsNothing);
       expect(find.text('현재 진행 중인 출석 세션이 없습니다'), findsOneWidget);
+    });
+
+    testWidgets('갱신 간격은 리터럴 시간으로 앞뒤에서 조인다', (tester) async {
+      // 잡아야 할 잘못된 구현: 간격을 1시간으로 늘린다.
+      //
+      // 다른 폴링 테스트는 전부 `pump(activeSessionRefreshInterval)`로
+      // **그 상수만큼** 진행시킨다 — 양변이 함께 움직여서 어떤 값이든
+      // 통과한다(#63). `toKst` 항등식, `read().runtimeType` 항등식에 이어
+      // 세 번째로 밟은 같은 함정이다.
+      //
+      // 그래서 여기서는 상수를 쓰지 않고 **리터럴 시간**으로 조인다.
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession);
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+      final initial = repo.activeSessionCalls;
+
+      // 5초로는 아직 돌면 안 된다 — 너무 잦은 폴링은 세션 시작 직후 요청을
+      // 부원 수만큼 몰리게 한다.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(repo.activeSessionCalls, initial, reason: '5초 만에 다시 조회하면 너무 잦다');
+
+      // 20초 안에는 반드시 한 번 돌아야 한다 — 그보다 길면 세션 시작·종료를
+      // 따라잡는다는 이 기능의 목적이 무너진다.
+      await tester.pump(const Duration(seconds: 15));
+      await tester.pumpAndSettle();
+      expect(
+        repo.activeSessionCalls,
+        greaterThan(initial),
+        reason: '20초 안에 따라잡지 못하면 폴링의 의미가 없다',
+      );
     });
 
     testWidgets('숨겨진 동안에는 재조회하지 않는다', (tester) async {
