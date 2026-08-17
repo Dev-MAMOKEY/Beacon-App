@@ -1,5 +1,6 @@
 import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
+import 'package:beacon_app/features/admin/data/beacon_psk_store.dart';
 import 'package:beacon_app/features/admin/data/club_member_repository.dart';
 import 'package:beacon_app/features/admin/data/session_dto.dart';
 import 'package:beacon_app/features/admin/data/session_repository.dart';
@@ -106,6 +107,25 @@ class _ScriptedSessionRepository implements SessionRepository {
   }
 }
 
+class _FakePskStore implements BeaconPskStore {
+  _FakePskStore([this.stored]);
+
+  String? stored;
+  final List<String> saved = [];
+
+  @override
+  Future<String?> read() async => stored;
+
+  @override
+  Future<void> save(String psk) async {
+    saved.add(psk);
+    stored = psk;
+  }
+
+  @override
+  Future<void> clear() async => stored = null;
+}
+
 class _StubMemberRepository implements ClubMemberRepository {
   _StubMemberRepository(this.count);
 
@@ -141,12 +161,18 @@ Future<void> _pumpAdmin(
   WidgetTester tester, {
   required _ScriptedSessionRepository repository,
   int memberCount = 15,
+  _FakePskStore? pskStore,
 }) async {
   final container = ProviderContainer(
     overrides: [
       sessionControllerProvider.overrideWith(_ReadySessionController.new),
       sessionRepositoryProvider.overrideWithValue(repository),
       clubMemberRepositoryProvider.overrideWithValue(_StubMemberRepository(memberCount)),
+      // 기본값은 **이미 저장된 유효한 PSK** — 대부분의 테스트는 PSK 흐름을
+      // 보려는 게 아니다. 없는 경우는 그 테스트가 직접 빈 저장소를 준다.
+      beaconPskStoreProvider.overrideWithValue(
+        pskStore ?? _FakePskStore('000102030405060708090a0b0c0d0e0f'),
+      ),
     ],
   );
   addTearDown(container.dispose);
@@ -303,6 +329,82 @@ void main() {
     expect(repo.startedSessionIds, [5]);
     expect(find.byType(ActiveSessionCard), findsOneWidget);
     expect(find.text('7329'), findsOneWidget, reason: '시작 응답의 코드를 그대로 보여준다');
+  });
+
+  testWidgets('PSK가 없으면 시작 전에 물어보고, 저장한 뒤 시작한다', (tester) async {
+    // PSK는 서버가 주지 않는다 — 펌웨어에 구워진 값과 같아야 GATT 명령이
+    // 받아들여진다. 관리자 설정 화면(#18)이 웹 전용이라 갈 곳이 없어
+    // **실제로 쓰이는 순간**인 여기서 받는다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 5, status: SessionStatus.scheduled)],
+    );
+    final psk = _FakePskStore();
+    await _pumpAdmin(tester, repository: repo, pskStore: psk);
+
+    await tester.tap(find.text('출석 시작하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('비콘 키 입력'), findsOneWidget);
+    expect(repo.startedSessionIds, isEmpty, reason: 'PSK를 받기 전에는 시작하지 않는다');
+
+    await tester.enterText(find.byType(TextField), '000102030405060708090a0b0c0d0e0f');
+    await tester.tap(find.text('저장하고 시작'));
+    await tester.pumpAndSettle();
+
+    expect(psk.saved, ['000102030405060708090a0b0c0d0e0f']);
+    expect(repo.startedSessionIds, [5], reason: '저장한 뒤에 시작한다');
+  });
+
+  testWidgets('PSK 형식이 틀리면 저장도 시작도 하지 않는다', (tester) async {
+    // 형식이 틀린 PSK는 **증상이 늦게 나타난다** — 저장되고, 세션도
+    // 시작되고, 비콘만 광고를 시작하지 않는다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 5, status: SessionStatus.scheduled)],
+    );
+    final psk = _FakePskStore();
+    await _pumpAdmin(tester, repository: repo, pskStore: psk);
+
+    await tester.tap(find.text('출석 시작하기'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.tap(find.text('저장하고 시작'));
+    await tester.pumpAndSettle();
+
+    expect(psk.saved, isEmpty);
+    expect(repo.startedSessionIds, isEmpty);
+    expect(find.text('32자 16진수를 입력해주세요 (0-9, a-f)'), findsOneWidget);
+    expect(find.text('비콘 키 입력'), findsOneWidget, reason: '고칠 수 있게 팝업이 남는다');
+  });
+
+  testWidgets('PSK가 이미 있으면 묻지 않고 곧장 시작한다', (tester) async {
+    // 잡아야 할 잘못된 구현: 매번 묻는다 — 세션을 시작할 때마다 32자를
+    // 다시 치게 된다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 5, status: SessionStatus.scheduled)],
+    );
+    final psk = _FakePskStore('000102030405060708090a0b0c0d0e0f');
+    await _pumpAdmin(tester, repository: repo, pskStore: psk);
+
+    await tester.tap(find.text('출석 시작하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('비콘 키 입력'), findsNothing);
+    expect(repo.startedSessionIds, [5]);
+  });
+
+  testWidgets('저장된 PSK가 형식에 안 맞으면 다시 묻는다', (tester) async {
+    // 비콘 기기를 교체하면 저장값이 틀리게 된다 — 바꿀 경로가 없으면
+    // 관리자가 영영 시작하지 못한다. 채워 둔 값에서 고칠 수 있어야 한다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 5, status: SessionStatus.scheduled)],
+    );
+    final psk = _FakePskStore('짧은키');
+    await _pumpAdmin(tester, repository: repo, pskStore: psk);
+
+    await tester.tap(find.text('출석 시작하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('비콘 키 입력'), findsOneWidget);
   });
 
   testWidgets('시작 버튼은 예정 세션에만 붙는다', (tester) async {
