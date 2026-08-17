@@ -438,6 +438,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   /// [generation]이 아직 현재 부트스트랩 세대인지. 아니면 그 결과는 이미
   /// 다른 클럽(또는 이전 가시성 구간)의 것이므로 버려야 한다.
+  ///
+  /// `mounted` 항은 **오늘 기준 관측 불가능하다** — `dispose()`가
+  /// `_bootstrapGeneration`을 올리므로 dispose 이후의 완료는 세대 검사에서
+  /// 이미 걸린다. 지우고 돌려도 실패하는 테스트가 없다(직접 확인). `setState`
+  /// 호출 앞의 안전장치로 남긴다.
   bool _isCurrentBootstrap(int generation) => mounted && generation == _bootstrapGeneration;
 
   bool _isCurrentScan(int generation) => mounted && generation == _scanGeneration;
