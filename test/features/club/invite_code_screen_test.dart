@@ -11,6 +11,7 @@ import 'package:beacon_app/features/auth/data/auth_repository.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
 import 'package:beacon_app/features/club/data/club_repository.dart';
 import 'package:beacon_app/features/club/presentation/invite_code_screen.dart';
+import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -142,6 +143,22 @@ Widget _host(ClubRepository repository) {
   );
 }
 
+/// 6칸 그리드에 한 글자씩 넣는다. Figma가 단일 입력 칸이 아니라 그리드라
+/// (`289:3271`) 예전처럼 `enterText(find.byType(TextField), ...)` 한 번으로는
+/// 입력할 수 없다(#61).
+Future<void> _enterCode(WidgetTester tester, String code) async {
+  final fields = find.byType(TextField);
+  for (var i = 0; i < code.length && i < fields.evaluate().length; i++) {
+    await tester.enterText(fields.at(i), code[i]);
+    await tester.pump();
+  }
+}
+
+String _codeText(WidgetTester tester) => tester
+    .widgetList<TextField>(find.byType(TextField))
+    .map((field) => field.controller!.text)
+    .join();
+
 void main() {
   // 예전에는 고정 Column + Spacer라 작은 화면에서 키보드가 올라오면
   // RenderFlex 오버플로가 났다. flutter_test는 오버플로를 예외로 보고하므로,
@@ -158,15 +175,43 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.byType(SingleChildScrollView), findsOneWidget);
-    expect(find.text('확인'), findsOneWidget);
+    expect(find.text('승인요청'), findsOneWidget);
   });
 
-  testWidgets('6자리 미만이면 확인 버튼이 비활성이다', (tester) async {
+  testWidgets('Figma 실측 — 제목·부제·6칸 그리드·안내 카드가 모두 있다', (tester) async {
+    // 잡아야 할 잘못된 구현: Phase 1의 단일 입력 칸 + 한 덩어리 제목.
+    // 이 화면의 레이아웃은 지금까지 어떤 테스트도 고정하지 않아, 무엇으로
+    // 바꿔도 스위트가 초록이었다(#61).
+    //
+    // 실측 출처: `289:3261` "초대코드 입력" —
+    // 제목 `289:3264`(title2/main), 부제 `289:3266`(body2/gray2),
+    // 그리드 `289:3271`(6칸), 안내 카드 `318:1459`, 버튼 `289:3287`.
+    await tester.pumpWidget(_host(_FakeClubRepository()));
+    await tester.pumpAndSettle();
+
+    final title = tester.widget<Text>(find.text('초대코드'));
+    expect(title.style!.fontSize, 28, reason: 'title2(28)이다');
+    expect(title.style!.color, AppColors.light.main, reason: 'gray3가 아니라 main이다');
+
+    final subtitle = tester.widget<Text>(find.text('관리자에게 받은 6자리 초대코드를 입력해주세요'));
+    expect(subtitle.style!.fontSize, 16);
+    expect(subtitle.style!.color, AppColors.light.gray2);
+
+    expect(
+      find.byType(TextField),
+      findsNWidgets(6),
+      reason: '단일 입력 칸이 아니라 6칸 그리드다',
+    );
+
+    expect(find.text('REQUIREMENT'), findsOneWidget, reason: '안내 카드가 있어야 한다');
+    expect(find.text('승인요청'), findsOneWidget, reason: '"확인"이 아니다');
+  });
+
+  testWidgets('6자리 미만이면 승인요청 버튼이 비활성이다', (tester) async {
     await tester.pumpWidget(_host(_FakeClubRepository()));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'ABC12');
-    await tester.pump();
+    await _enterCode(tester, 'ABC12');
 
     expect(tester.widget<AppButton>(find.byType(AppButton)).onPressed, isNull);
   });
@@ -175,10 +220,9 @@ void main() {
     await tester.pumpWidget(_host(_FakeClubRepository()));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'abc123');
-    await tester.pump();
+    await _enterCode(tester, 'abc123');
 
-    expect(find.text('ABC123'), findsOneWidget);
+    expect(_codeText(tester), 'ABC123');
     expect(tester.widget<AppButton>(find.byType(AppButton)).onPressed, isNotNull);
   });
 
@@ -191,57 +235,25 @@ void main() {
     // 필드에 남아 6자리를 채운 것처럼 보이고 버튼도 활성화된다(이 테스트가
     // 직접 보는 것은 여기까지다 — 그 뒤 실제로 서버에 전송되는지는 별개로
     // club_repository_test.dart가 확인한다).
-    await tester.enterText(find.byType(TextField), '      ');
-    await tester.pump();
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      isEmpty,
-      reason: '공백은 애초에 입력되지 않아야 한다',
-    );
+    await _enterCode(tester, '      ');
+    expect(_codeText(tester), isEmpty, reason: '공백은 애초에 입력되지 않아야 한다');
     expect(tester.widget<AppButton>(find.byType(AppButton)).onPressed, isNull);
 
     // 이모지 3개 — 사용자 체감 글자 수는 3이지만 UTF-16 code unit 길이는
     // 6이다(각 이모지가 서로게이트 쌍 2유닛). 필터링이 없으면 String.length
     // == 6이 돼 버튼이 활성화된다.
-    await tester.enterText(find.byType(TextField), '😀😀😀');
-    await tester.pump();
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      isEmpty,
-      reason: '이모지도 애초에 입력되지 않아야 한다',
-    );
+    await _enterCode(tester, '😀😀😀');
+    expect(_codeText(tester), isEmpty, reason: '이모지도 애초에 입력되지 않아야 한다');
     expect(tester.widget<AppButton>(find.byType(AppButton)).onPressed, isNull);
   });
 
-  testWidgets('중간 글자를 수정해도 캐럿이 끝으로 튀지 않는다', (tester) async {
-    await tester.pumpWidget(_host(_FakeClubRepository()));
-    await tester.pump();
-
-    await tester.enterText(find.byType(TextField), 'ab12');
-    await tester.pump();
-
-    await tester.showKeyboard(find.byType(TextField));
-    // 커서가 'a' 바로 뒤(오프셋 1)에 있는 상태에서 소문자 'z'를 끼워 넣는
-    // 것을 시뮬레이션한다 — 실기기에서 캐럿을 문자열 중간에 두고 타이핑하는
-    // 것과 같다. TextEditingValue를 통째로 새로 만들어 selection을 항상
-    // 끝으로 보내는 구현이라면, 여기서 만든 새 커서는 오프셋 5(문자열 끝)로
-    // 튀어야 정상(=버그)이다.
-    tester.testTextInput.updateEditingValue(
-      const TextEditingValue(
-        text: 'azb12',
-        selection: TextSelection.collapsed(offset: 2),
-      ),
-    );
-    await tester.pump();
-
-    final controller = tester.widget<TextField>(find.byType(TextField)).controller!;
-    expect(controller.text, 'AZB12');
-    expect(
-      controller.selection,
-      const TextSelection.collapsed(offset: 2),
-      reason: '캐럿은 방금 입력한 글자 바로 뒤(오프셋 2)에 남아 있어야 한다 — 끝으로 튀면 안 된다',
-    );
-  });
+  // 삭제된 테스트: "중간 글자를 수정해도 캐럿이 끝으로 튀지 않는다".
+  //
+  // 한 칸에 한 글자만 들어가는 그리드(Figma `289:3271`)로 바뀌면서 "문자열
+  // 중간에 캐럿을 두고 타이핑한다"는 상황 자체가 사라졌다. `_UpperCaseText
+  // Formatter`의 선택 영역 보존 로직은 여전히 옳지만, 이 화면에서 그것을
+  // 관측할 방법이 없다 — 남겨 두면 통과하지만 아무것도 증명하지 않는
+  // 테스트가 된다(#61).
 
   testWidgets(
     '가입에 성공하면 대문자 코드를 전송하고, 프로필을 다시 읽어 세션이 SessionReady가 된다',
@@ -260,9 +272,9 @@ void main() {
       await harness.container.read(sessionControllerProvider.future);
       await tester.pump();
 
-      await tester.enterText(find.byType(TextField), 'abc123');
+      await _enterCode(tester, 'abc123');
       await tester.pump();
-      await tester.tap(find.text('확인'));
+      await tester.tap(find.text('승인요청'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -280,9 +292,8 @@ void main() {
     await tester.pumpWidget(_host(_FakeClubRepository(shouldFail: true)));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'ABC123');
-    await tester.pump();
-    await tester.tap(find.text('확인'));
+    await _enterCode(tester, 'ABC123');
+    await tester.tap(find.text('승인요청'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
@@ -290,24 +301,22 @@ void main() {
       find.text('유효하지 않은 초대코드입니다. 관리자에게 다시 확인해주세요'),
       findsOneWidget,
     );
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    expect(_codeText(tester), isEmpty);
   });
 
   testWidgets('에러가 뜬 뒤 글자를 입력하면 에러 메시지가 사라진다', (tester) async {
     await tester.pumpWidget(_host(_FakeClubRepository(shouldFail: true)));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'ABC123');
-    await tester.pump();
-    await tester.tap(find.text('확인'));
+    await _enterCode(tester, 'ABC123');
+    await tester.tap(find.text('승인요청'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('유효하지 않은 초대코드입니다. 관리자에게 다시 확인해주세요'), findsOneWidget);
 
     // 입력은 실패 처리 과정에서 이미 비워졌다 — 한 글자만 새로 입력한다.
-    await tester.enterText(find.byType(TextField), 'Z');
-    await tester.pump();
+    await _enterCode(tester, 'Z');
 
     expect(find.text('유효하지 않은 초대코드입니다. 관리자에게 다시 확인해주세요'), findsNothing);
   });
@@ -324,24 +333,20 @@ void main() {
       await harness.container.read(sessionControllerProvider.future);
       await tester.pump();
 
-      await tester.enterText(find.byType(TextField), 'ABC123');
-      await tester.pump();
-      await tester.tap(find.text('확인'));
+      await _enterCode(tester, 'ABC123');
+      await tester.tap(find.text('승인요청'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
       // 1차 시도(네트워크 오류): 코드 자체가 틀린 게 아니므로 입력이 남아
       // 있어야 한다 — 지우면 사용자가 맞는 코드를 처음부터 다시 타이핑해야
       // 한다. 세션도 아직 바뀌지 않아야 한다(refreshProfile을 부르지 않음).
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        'ABC123',
-      );
+      expect(_codeText(tester), 'ABC123');
       expect(harness.container.read(sessionControllerProvider).value, isA<SessionSignedOut>());
 
       // 같은 코드로 재시도 — 이번엔 ALREADY_CLUB_MEMBER: 1차 시도가 사실
       // 서버에는 이미 반영돼 있었다는 뜻이다. 성공과 동등하게 처리해야 한다.
-      await tester.tap(find.text('확인'));
+      await tester.tap(find.text('승인요청'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -361,14 +366,13 @@ void main() {
     await tester.pumpWidget(_host(repository));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'ABC123');
-    await tester.pump();
+    await _enterCode(tester, 'ABC123');
 
     // pump() 없이 연속으로 두 번 탭한다 — 첫 탭이 만든 setState는 아직
     // 다음 프레임에 반영되지 않았으므로, 재진입 가드가 없다면 두 번째
     // 탭도 여전히 `_submit`을 그대로 호출한다.
-    await tester.tap(find.text('확인'));
-    await tester.tap(find.text('확인'));
+    await tester.tap(find.text('승인요청'));
+    await tester.tap(find.text('승인요청'));
     await tester.pump();
 
     gate.complete();
@@ -384,9 +388,8 @@ void main() {
     await tester.pumpWidget(_host(repository));
     await tester.pump();
 
-    await tester.enterText(find.byType(TextField), 'ABC123');
-    await tester.pump();
-    await tester.tap(find.text('확인'));
+    await _enterCode(tester, 'ABC123');
+    await tester.tap(find.text('승인요청'));
     await tester.pump();
 
     // joinByInviteCode가 아직 게이트에 걸려 끝나지 않은 상태에서 화면

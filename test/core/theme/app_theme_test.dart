@@ -58,6 +58,7 @@ AppTypography _distinctTypography() {
   }
 
   return AppTypography(
+    title2: next(),
     title3: next(),
     title4: next(),
     title6: next(),

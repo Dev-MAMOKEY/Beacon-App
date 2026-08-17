@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:flutter_svg/flutter_svg.dart';
+
 import '../../../components/ui/button.dart';
-import '../../../components/ui/input.dart';
+import '../../../components/ui/otp_input.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/error_code.dart';
 import '../../../core/theme/app_colors.dart';
@@ -52,19 +54,23 @@ class InviteCodeScreen extends ConsumerStatefulWidget {
 }
 
 class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
-  final TextEditingController _code = TextEditingController();
+  /// 지금까지 입력된 코드. Figma가 단일 입력 칸이 아니라 6칸 그리드
+  /// (`289:3271`)라 `AppOtpInput`이 글자를 모아 준다(#61).
+  String _code = '';
+
+  final AppOtpController _otpController = AppOtpController();
 
   String? _error;
   bool _isSubmitting = false;
 
   @override
   void dispose() {
-    _code.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
   bool get _canSubmit =>
-      _code.text.length == InviteCodeScreen.codeLength && !_isSubmitting;
+      _code.length == InviteCodeScreen.codeLength && !_isSubmitting;
 
   Future<void> _submit() async {
     // 재진입 방지: _isSubmitting은 다음 프레임에 가서야 버튼의 disabled에
@@ -78,7 +84,7 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
     });
 
     try {
-      await ref.read(clubRepositoryProvider).joinByInviteCode(_code.text);
+      await ref.read(clubRepositoryProvider).joinByInviteCode(_code);
       // await 이후에는 화면이 이미 사라졌을 수 있다(예: 세션이 다른 경로로
       // 이미 갱신되어 라우터가 이 화면을 밀어냈다). 이미 사라진 화면을
       // 대신해 세션을 바꾸지 않도록, ref를 다시 쓰기 전에 반드시 mounted를
@@ -101,7 +107,8 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
         // 타이핑해야 하는데, 방금 입력한 코드가 실제로는 맞는 코드였을 수
         // 있다 — 지우는 건 적대적이다.
         if (error.code == ErrorCode.invalidInviteCode) {
-          _code.clear();
+          _code = '';
+          _otpController.shake();
         }
         _error = error.code == ErrorCode.invalidInviteCode
             ? '유효하지 않은 초대코드입니다. 관리자에게 다시 확인해주세요'
@@ -124,7 +131,10 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
   // 에러 메시지만 지운다 — 사용자가 코드를 고치기 시작하면 지난 실패
   // 메시지는 더 이상 유효하지 않다.
   void _onCodeChanged(String value) {
-    setState(() => _error = null);
+    setState(() {
+      _code = value;
+      _error = null;
+    });
   }
 
   @override
@@ -158,35 +168,67 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Figma `289:3262` "타이틀" — 제목과 부제가 별개 요소다.
+                    // Phase 1은 두 줄을 한 덩어리(title3 / gray3)로 그렸다.
                     const SizedBox(height: 80),
                     Text(
-                      '관리자에게 받은\n초대코드를 입력해주세요',
-                      style: typography.title3.copyWith(color: colors.gray3),
+                      '초대코드',
+                      // 실측(`289:3264`): title2(SemiBold 28) / main.
+                      style: typography.title2.copyWith(color: colors.main),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '관리자에게 받은 6자리 초대코드를 입력해주세요',
+                      // 실측(`289:3266`): body2(16) / gray2.
+                      style: typography.body2.copyWith(color: colors.gray2),
                     ),
                     const SizedBox(height: 40),
-                    AppInput(
-                      controller: _code,
-                      hint: '초대코드 6자리',
-                      errorText: _error,
-                      maxLength: InviteCodeScreen.codeLength,
-                      textCapitalization: TextCapitalization.characters,
-                      // 순서가 중요하다: 먼저 영문/숫자만 남기고(그래야
-                      // 이모지·공백처럼 UTF-16 길이와 사용자 체감 글자 수가
-                      // 어긋나는 입력이 애초에 들어오지 못한다 — 6자리 판정은
-                      // String.length를 쓴다), 그다음 대문자로 바꾼다.
-                      // FilteringTextInputFormatter는 SDK 제공 구현이라
-                      // 걸러낸 만큼 선택 영역을 알아서 맞춰준다.
+                    // 실측(`289:3271`): 6칸 균등 분할 정사각, 간격 12,
+                    // 반경 14, 흰 배경.
+                    AppOtpInput(
+                      length: InviteCodeScreen.codeLength,
+                      controller: _otpController,
+                      enabled: !_isSubmitting,
+                      stretchCells: true,
+                      gap: 12,
+                      cellRadius: 14,
+                      fillColor: colors.white,
+                      keyboardType: TextInputType.text,
+                      semanticsLabel: '초대코드',
+                      // 순서가 중요하다: 먼저 영문/숫자만 남기고 그다음
+                      // 대문자로 바꾼다(Phase 1의 규칙을 그대로 옮겼다).
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(RegExp('[A-Za-z0-9]')),
                         const _UpperCaseTextFormatter(),
                       ],
                       onChanged: _onCodeChanged,
+                      onCompleted: _onCodeChanged,
                     ),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _error!,
+                        style: typography.body3.copyWith(color: colors.red),
+                      ),
+                    ],
+                    const SizedBox(height: 36),
+                    // 실측(`318:1459`) "알림 문구" — 흰 배경, 반경 16,
+                    // 좌우 20·상하 16, 아이콘 20, 아이콘–제목 간격 9,
+                    // 제목–본문 간격 7, 본문 줄 간격 4.
+                    const _RequirementCard(),
                     const Spacer(),
                     AppButton(
-                      label: '확인',
+                      // 실측(`289:3287`): 라벨이 "확인"이 아니라 "승인요청"
+                      // 이고 셰브론이 붙는다.
+                      label: '승인요청',
                       isLoading: _isSubmitting,
                       onPressed: _canSubmit ? _submit : null,
+                      trailing: SvgPicture.asset(
+                        'assets/icons/chevron-right.svg',
+                        width: 7.78,
+                        height: 12.73,
+                        colorFilter: ColorFilter.mode(colors.bg, BlendMode.srcIn),
+                      ),
                     ),
                   ],
                 ),
@@ -194,6 +236,53 @@ class _InviteCodeScreenState extends ConsumerState<InviteCodeScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Figma `318:1459` "알림 문구" — 초대코드가 없는 사용자를 위한 안내 카드.
+/// Phase 1 구현에는 이 요소가 아예 없었다(#61).
+class _RequirementCard extends StatelessWidget {
+  const _RequirementCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    final typography = Theme.of(context).extension<AppTypography>()!;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              SvgPicture.asset(
+                'assets/icons/error-warning-line.svg',
+                width: 20,
+                height: 20,
+                colorFilter: ColorFilter.mode(colors.gray2, BlendMode.srcIn),
+              ),
+              const SizedBox(width: 9),
+              Text(
+                // 실측(`318:1463`)은 대문자 "REQUIREMENT"다.
+                'REQUIREMENT',
+                style: typography.title7.copyWith(color: colors.gray2),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text(
+            '코드가 없으신가요? 담당 관리자에게 문의하여 6자리\n인증 코드를 발급받으세요.',
+            style: typography.body3.copyWith(color: colors.gray2, height: 1.3),
+          ),
+        ],
       ),
     );
   }
