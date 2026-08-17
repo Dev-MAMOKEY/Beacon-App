@@ -438,6 +438,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   /// [generation]이 아직 현재 부트스트랩 세대인지. 아니면 그 결과는 이미
   /// 다른 클럽(또는 이전 가시성 구간)의 것이므로 버려야 한다.
+  ///
+  /// `mounted` 항은 **오늘 기준 관측 불가능하다** — `dispose()`가
+  /// `_bootstrapGeneration`을 올리므로 dispose 이후의 완료는 세대 검사에서
+  /// 이미 걸린다. 지우고 돌려도 실패하는 테스트가 없다(직접 확인). `setState`
+  /// 호출 앞의 안전장치로 남긴다.
   bool _isCurrentBootstrap(int generation) => mounted && generation == _bootstrapGeneration;
 
   bool _isCurrentScan(int generation) => mounted && generation == _scanGeneration;
@@ -786,6 +791,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // 팝업이 어떤 이유로든 새어 나온 상태일 수도 있다 — 제출 직전에 조건을
     // 다시 확인한다. 이 화면의 핵심 보증("비콘 감지 AND 활성 세션")은
     // 팝업의 존재가 아니라 이 검사가 지킨다(리뷰 Critical 1).
+    //
+    // `!_visible` 항은 **오늘 기준으로는 관측 불가능하다** — `_onBecameHidden`
+    // 이 `_beaconState`를 `BeaconIdle`로 되돌리므로 숨겨지면 `_codeConditionRaw`
+    // 가 어차피 거짓이 된다. 지우고 돌려도 실패하는 테스트가 없다(직접 확인).
+    // 남겨 두는 이유는 그 초기화가 언젠가 빠져도 이 줄이 여전히 막기
+    // 때문이다 — 두 층이 서로를 가리는 구조라 각각을 테스트로 고정할 수는
+    // 없다(#45의 폴링 가드와 같은 상황).
     if (!_visible || !_codeConditionRaw) return;
 
     final submitGeneration = ++_submitGeneration;

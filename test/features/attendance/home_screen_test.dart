@@ -1363,6 +1363,85 @@ void main() {
     });
   });
 
+  group('제출 직전 검사 — 팝업이 새어 나와도 조건이 거짓이면 보내지 않는다', () {
+    // 이 화면의 핵심 보증("비콘 감지 AND 활성 세션")은 팝업의 존재가 아니라
+    // `_submitCode` 첫 줄의 검사가 지킨다 — 소스에도 그렇게 적혀 있다.
+    // 그런데 **그 줄을 통째로 지워도 스위트가 초록이었다**(#44). 팝업이 닫히면
+    // 입력할 방법이 없어 어떤 테스트도 그 경로를 지나가지 않았기 때문이다.
+    //
+    // 그래서 "팝업이 어떤 이유로든 새어 나온 상태"를 직접 만든다 — 열려 있는
+    // 동안 `onCompleted` 콜백을 붙잡아 두었다가, 조건을 거짓으로 만든 뒤에
+    // 그 콜백을 부른다. 방어적 경로를 시험하는 정직한 방법이다.
+    ValueChanged<String> captureOnCompleted(WidgetTester tester) =>
+        tester.widget<AppOtpInput>(find.byType(AppOtpInput)).onCompleted;
+
+    testWidgets('비콘이 범위를 벗어난 뒤 도착한 완료는 제출되지 않는다', (tester) async {
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+        ..results.add(AttendanceStatus.present);
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      final onCompleted = captureOnCompleted(tester);
+
+      scanner.emit(const BeaconOutOfRange());
+      await tester.pumpAndSettle();
+
+      onCompleted('1234');
+      await tester.pumpAndSettle();
+
+      expect(repo.checkInArgs, isEmpty, reason: '방을 나갔는데 출석이 나가면 보증이 무너진다');
+    });
+
+    testWidgets('활성 세션이 사라진 뒤 도착한 완료는 제출되지 않는다', (tester) async {
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+        ..results.add(AttendanceStatus.present);
+      await _pumpHome(tester, scanner: scanner, attendanceRepository: repo);
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      final onCompleted = captureOnCompleted(tester);
+
+      // 세션이 종료된다(#45의 폴링이 이걸 따라잡는다).
+      repo.activeSession = null;
+      await tester.pump(activeSessionRefreshInterval);
+      await tester.pumpAndSettle();
+
+      onCompleted('1234');
+      await tester.pumpAndSettle();
+
+      expect(repo.checkInArgs, isEmpty, reason: '종료된 세션에 출석을 보내면 안 된다');
+    });
+
+    testWidgets('탭이 숨겨진 뒤 도착한 완료는 제출되지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 제출 직전 검사에서 `!_visible`만 뺀다.
+      // 비콘 상태와 세션은 그대로라 `_codeConditionRaw`는 여전히 참이다 —
+      // 가시성 항이 유일한 방어다.
+      final scanner = FakeBeaconScanner();
+      final repo = _ScriptedAttendanceRepository(activeSession: _activeSession)
+        ..results.add(AttendanceStatus.present);
+      final (container: _, routes: _, :visible) = await _pumpHome(
+        tester,
+        scanner: scanner,
+        attendanceRepository: repo,
+      );
+
+      scanner.emit(const BeaconDetected(-60));
+      await tester.pumpAndSettle();
+      final onCompleted = captureOnCompleted(tester);
+
+      visible.value = false;
+      await tester.pumpAndSettle();
+
+      onCompleted('1234');
+      await tester.pumpAndSettle();
+
+      expect(repo.checkInArgs, isEmpty, reason: '보이지도 않는 탭이 출석을 보내면 안 된다');
+    });
+  });
+
   testWidgets('서버 오류 메시지는 토스트가 아니라 팝업 안에 보인다', (tester) async {
     // 잡아야 할 잘못된 구현: `showAppToast`로 띄운다. 그 `SnackBar`는 셸
     // `Scaffold` 안에 그려지는데, 코드 입력 팝업이 아직 열려 있어 그 위에

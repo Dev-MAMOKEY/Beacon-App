@@ -317,6 +317,48 @@ void main() {
   // ---------------------------------------------------------------------
   // 배지 색
   // ---------------------------------------------------------------------
+  testWidgets('같은 시각의 세션이 여럿이면 sessionId 순서로 결정론적으로 정렬된다', (tester) async {
+    // 잡아야 할 잘못된 구현: 타이브레이크를 빼고 시각만으로 정렬한다.
+    // Dart의 `List.sort`는 안정 정렬이 아니라 같은 시각의 세션 둘이
+    // 리빌드마다 다른 순서로 뜰 수 있다. **입력 순서를 sessionId의 역순으로**
+    // 넣어야 그 차이가 드러난다 — 같은 순서로 넣으면 두 구현이 같은 결과를
+    // 낸다(#44에서 이 변이가 살아남았던 이유다).
+    final repo = _RecordingRecordsRepository(
+      responses: {
+        (2026, 8): _monthly(
+          year: 2026,
+          month: 8,
+          records: [
+            AttendanceRecordItem(
+              sessionId: 9,
+              sessionName: '나중에 만든 세션',
+              date: DateTime.utc(2026, 8, 10, 1),
+              status: AttendanceStatus.present,
+            ),
+            AttendanceRecordItem(
+              sessionId: 2,
+              sessionName: '먼저 만든 세션',
+              date: DateTime.utc(2026, 8, 10, 1),
+              status: AttendanceStatus.present,
+            ),
+          ],
+        ),
+      },
+    );
+    await _pumpRecords(tester, repository: repo, now: DateTime(2026, 8, 15));
+
+    await tester.tap(_calendarText('10'));
+    await tester.pumpAndSettle();
+
+    final first = tester.getTopLeft(find.text('먼저 만든 세션')).dy;
+    final second = tester.getTopLeft(find.text('나중에 만든 세션')).dy;
+    expect(
+      first,
+      lessThan(second),
+      reason: 'sessionId가 작은 세션이 위에 와야 리빌드마다 순서가 바뀌지 않는다',
+    );
+  });
+
   testWidgets('출석/지각/결석/기타가 각각 지정된 배지 색으로 렌더된다', (tester) async {
     // 잡아야 할 잘못된 구현: 상태별 색이 서로 뒤바뀐다(출석에 지각 색),
     // 또는 상태와 무관하게 한 색으로 통일한다.
