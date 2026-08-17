@@ -24,7 +24,15 @@ import 'attendance_status_popup.dart';
 import 'attendance_status_sheet.dart';
 import 'beacon_psk_popup.dart';
 import 'manual_attendance_popup.dart';
+import 'member_actions_popup.dart';
+import 'members_sheet.dart';
 import 'session_form_popup.dart';
+
+/// 멤버 검색 입력이 멎은 뒤 요청을 보내기까지 기다리는 시간.
+///
+/// 타이핑마다 보내면 목록이 계속 깜빡이고 서버에도 부담이다.
+@visibleForTesting
+const Duration memberSearchDebounce = Duration(milliseconds: 300);
 
 /// 출석 현황 시트가 열려 있는 동안 목록을 다시 조회하는 간격.
 ///
@@ -84,6 +92,9 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   void dispose() {
     _generation++;
     _stopAttendancePolling();
+    _searchDebounce?.cancel();
+    _memberSearch.dispose();
+    _membersState.dispose();
     _attendanceState.dispose();
     _owned.closeAll();
     super.dispose();
@@ -189,6 +200,21 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   /// 받아들여지므로 관리자에게 직접 받아 이 기기에만 저장한다. 관리자 설정
   /// 화면(#18)이 웹 전용이라 갈 곳이 없고, **PSK가 실제로 쓰이는 유일한
   /// 순간**이 여기다.
+  /// 멤버 관리 시트의 상태. 시트는 별도 라우트라 이 화면의 `setState`로
+  /// 다시 그려지지 않는다.
+  final ValueNotifier<({List<ClubMember> members, bool loading, bool failed})> _membersState =
+      ValueNotifier((members: const [], loading: false, failed: false));
+
+  final TextEditingController _memberSearch = TextEditingController();
+
+  /// 검색 입력마다 요청을 보내지 않기 위한 디바운스.
+  Timer? _searchDebounce;
+
+  /// 내 `memberId`. 역할 변경 요청의 `requesterId`이고, 자기 자신을 강등·
+  /// 제외하지 못하게 막는 기준이다. `GET /members/me`에 `memberId`가 없어
+  /// 멤버 목록에서 학번으로 찾는다.
+  int? _myMemberId;
+
   /// 출석 현황 폴링 타이머. 시트가 닫히면 멈춘다.
   Timer? _attendanceTimer;
 
@@ -203,6 +229,137 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   /// 시트가 구독할 수 있는 notifier에 담는다.
   final ValueNotifier<({List<AdminAttendanceRecord> records, bool loading, bool failed})>
   _attendanceState = ValueNotifier((records: const [], loading: false, failed: false));
+
+  /// 멤버 관리를 시트로 연다.
+  void _openMembers(int clubId) {
+    _membersState.value = (members: const [], loading: true, failed: false);
+    _memberSearch.clear();
+
+    _owned.push(
+      buildAppSheetRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => ListenableBuilder(
+          listenable: _membersState,
+          builder: (context, _) {
+            final state = _membersState.value;
+            return MembersSheetContent(
+              members: state.members,
+              searchController: _memberSearch,
+              isLoading: state.loading,
+              loadFailed: state.failed,
+              onSearchChanged: (value) => _onMemberSearchChanged(clubId, value),
+              onTapMember: (member) => _openMemberActions(clubId, member),
+            );
+          },
+        ),
+      ),
+    );
+    unawaited(_loadMembers(clubId));
+  }
+
+  /// 타이핑마다 요청을 보내지 않는다 — 한 글자에 한 번씩 나가면 목록이
+  /// 계속 깜빡이고 서버에도 부담이다.
+  void _onMemberSearchChanged(int clubId, String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(memberSearchDebounce, () {
+      unawaited(_loadMembers(clubId, search: value));
+    });
+  }
+
+  Future<void> _loadMembers(int clubId, {String? search}) async {
+    try {
+      final members = await ref
+          .read(clubMemberRepositoryProvider)
+          .fetchMembers(clubId, search: search);
+      if (!mounted) return;
+      _myMemberId ??= _findMyMemberId(members);
+      _membersState.value = (members: members, loading: false, failed: false);
+    } catch (_) {
+      if (!mounted) return;
+      _membersState.value = (members: const [], loading: false, failed: true);
+    }
+  }
+
+  /// 목록에서 나를 찾는다 — 학번이 유일한 키다.
+  ///
+  /// 검색으로 걸러진 목록에는 내가 없을 수 있으므로, 한 번 찾은 뒤에는
+  /// 덮어쓰지 않는다(`??=`).
+  int? _findMyMemberId(List<ClubMember> members) {
+    final session = ref.read(sessionControllerProvider).value;
+    if (session is! SessionReady) return null;
+    for (final member in members) {
+      if (member.stdId == session.profile.stdId) return member.memberId;
+    }
+    return null;
+  }
+
+  void _openMemberActions(int clubId, ClubMember member) {
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => MemberActionsPopupContent(
+          member: member,
+          // 관리자가 스스로를 강등하거나 제외하면 그 동아리에 관리자가
+          // 없어질 수 있고, 되돌릴 방법이 앱 안에 없다.
+          isSelf: _myMemberId != null && member.memberId == _myMemberId,
+          onCancel: _owned.closeAll,
+          onToggleRole: () => unawaited(_toggleRole(clubId, member)),
+          onRemove: () => _confirmRemoveMember(clubId, member),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleRole(int clubId, ClubMember member) async {
+    final requesterId = _myMemberId;
+    _owned.closeAll();
+    if (requesterId == null) {
+      if (mounted && _visible) showAppToast(context, '내 정보를 확인하지 못했습니다.');
+      return;
+    }
+    try {
+      await ref.read(clubMemberRepositoryProvider).updateRole(
+        clubId: clubId,
+        requesterId: requesterId,
+        targetMemberId: member.memberId,
+        newRole: member.role == ClubRole.admin ? ClubRole.member : ClubRole.admin,
+      );
+      if (!mounted) return;
+      _openMembers(clubId);
+    } catch (_) {
+      if (!mounted || !_visible) return;
+      showAppToast(context, '역할을 바꾸지 못했습니다.');
+    }
+  }
+
+  void _confirmRemoveMember(int clubId, ClubMember member) {
+    _owned.closeAll();
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => MemberRemoveConfirmContent(
+          member: member,
+          onCancel: _owned.closeAll,
+          onConfirm: () async {
+            _owned.closeAll();
+            try {
+              await ref
+                  .read(clubMemberRepositoryProvider)
+                  .removeMember(clubId: clubId, memberId: member.memberId);
+              if (!mounted) return;
+              _openMembers(clubId);
+            } catch (_) {
+              if (!mounted || !_visible) return;
+              showAppToast(context, '멤버를 제외하지 못했습니다.');
+            }
+          },
+        ),
+      ),
+    );
+  }
 
   /// 세션의 출석 현황을 시트로 연다.
   ///
@@ -513,7 +670,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         child: Column(
           children: [
             const SizedBox(height: 62 - 47),
-            const _AdminTopBar(),
+            _AdminTopBar(onMembers: clubId == null ? null : () => _openMembers(clubId)),
             const SizedBox(height: 24),
             Expanded(
               child: sessions == null
@@ -569,7 +726,12 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 }
 
 class _AdminTopBar extends StatelessWidget {
-  const _AdminTopBar();
+  const _AdminTopBar({this.onMembers});
+
+  /// 멤버 관리 진입점. Figma 모바일 관리자 화면(`353:2033`)에는 이 자리에
+  /// 알림 벨만 있고 멤버 관리로 가는 길이 없다 — 웹에만 있는 화면이라
+  /// 모바일 진입점을 새로 만들어야 했다(#17).
+  final VoidCallback? onMembers;
 
   /// 세션을 시작하고 출석 코드를 받아 둔다.
   ///
@@ -594,11 +756,13 @@ class _AdminTopBar extends StatelessWidget {
             // 가장 가까운 title4로 두고 리포트에 남긴다.
             style: typography.title4.copyWith(color: colors.gray3),
           ),
-          SvgPicture.asset(
-            'assets/icons/notification.svg',
-            width: 24,
-            height: 24,
-            colorFilter: ColorFilter.mode(colors.gray3, BlendMode.srcIn),
+          GestureDetector(
+            onTap: onMembers,
+            behavior: HitTestBehavior.opaque,
+            child: Text(
+              '멤버',
+              style: typography.body2.copyWith(color: colors.gray3),
+            ),
           ),
         ],
       ),

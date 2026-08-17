@@ -18,11 +18,22 @@ class _StubMemberRepository implements ClubMemberRepository {
   final List<int> requestedClubIds = [];
 
   @override
-  Future<List<ClubMember>> fetchMembers(int clubId) async {
+  Future<List<ClubMember>> fetchMembers(int clubId, {String? search}) async {
     requestedClubIds.add(clubId);
     if (throws) throw Exception('조회 실패');
     return _members;
   }
+
+  @override
+  Future<void> updateRole({
+    required int clubId,
+    required int requesterId,
+    required int targetMemberId,
+    required ClubRole newRole,
+  }) async {}
+
+  @override
+  Future<void> removeMember({required int clubId, required int memberId}) async {}
 }
 
 class _ReadySessionController extends SessionController {
