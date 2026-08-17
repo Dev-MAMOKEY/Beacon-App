@@ -35,6 +35,7 @@ class ActiveSessionCard extends StatelessWidget {
     required this.attendeeCount,
     required this.memberCount,
     required this.onEnd,
+    required this.onTap,
     this.isEnding = false,
   });
 
@@ -52,6 +53,11 @@ class ActiveSessionCard extends StatelessWidget {
   final int? memberCount;
 
   final VoidCallback onEnd;
+
+  /// 카드 본문을 탭하면 출석 현황·수정·삭제를 고르는 팝업이 뜬다. 진행 중
+  /// 세션에도 필요하다 — **출석 현황이 가장 중요한 순간이 진행 중일 때**다.
+  final VoidCallback onTap;
+
   final bool isEnding;
 
   @override
@@ -59,32 +65,35 @@ class ActiveSessionCard extends StatelessWidget {
     final colors = Theme.of(context).extension<AppColors>()!;
     final typography = Theme.of(context).extension<AppTypography>()!;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SessionHeader(
-            session: session,
-            badgeLabel: '진행 중',
-            badgeBackground: colors.bg,
-            badgeForeground: colors.sessionActiveBadge,
-            badgeStyle: typography.title7,
-          ),
-          const SizedBox(height: 18),
-          _CodeAndAttendance(
-            otpCode: otpCode,
-            attendeeCount: attendeeCount,
-            memberCount: memberCount,
-          ),
-          const SizedBox(height: 18),
-          _EndButton(onPressed: onEnd, isLoading: isEnding),
-        ],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: colors.white,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SessionHeader(
+              session: session,
+              badgeLabel: '진행 중',
+              badgeBackground: colors.bg,
+              badgeForeground: colors.sessionActiveBadge,
+              badgeStyle: typography.title7,
+            ),
+            const SizedBox(height: 18),
+            _CodeAndAttendance(
+              otpCode: otpCode,
+              attendeeCount: attendeeCount,
+              memberCount: memberCount,
+            ),
+            const SizedBox(height: 18),
+            _EndButton(onPressed: onEnd, isLoading: isEnding),
+          ],
+        ),
       ),
     );
   }
@@ -179,7 +188,10 @@ class _StartButton extends StatelessWidget {
                   valueColor: AlwaysStoppedAnimation<Color>(colors.white),
                 ),
               )
-            : Text('출석 시작하기', style: typography.title6.copyWith(color: colors.bg)),
+            : Text(
+                '출석 시작하기',
+                style: typography.title6.copyWith(color: colors.bg),
+              ),
       ),
     );
   }
@@ -225,7 +237,10 @@ class _SessionHeader extends StatelessWidget {
                 color: badgeBackground,
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: Text(badgeLabel, style: badgeStyle.copyWith(color: badgeForeground)),
+              child: Text(
+                badgeLabel,
+                style: badgeStyle.copyWith(color: badgeForeground),
+              ),
             ),
           ],
         ),
@@ -271,7 +286,10 @@ class _CodeAndAttendance extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('출석코드', style: typography.title7.copyWith(color: colors.gray2)),
+              Text(
+                '출석코드',
+                style: typography.title7.copyWith(color: colors.gray2),
+              ),
               const SizedBox(height: 10),
               Text(
                 // 코드를 못 받았으면 대시다. 시작은 한 번뿐이라 화면을 다시
@@ -288,7 +306,10 @@ class _CodeAndAttendance extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text('출석인원', style: typography.title7.copyWith(color: colors.gray2)),
+              Text(
+                '출석인원',
+                style: typography.title7.copyWith(color: colors.gray2),
+              ),
               const SizedBox(height: 6),
               Text(
                 '${attendeeCount ?? '-'}/${memberCount ?? '-'}',

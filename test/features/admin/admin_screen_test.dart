@@ -7,6 +7,7 @@ import 'package:beacon_app/features/admin/data/club_member_repository.dart';
 import 'package:beacon_app/features/admin/data/session_dto.dart';
 import 'package:beacon_app/features/admin/data/session_repository.dart';
 import 'package:beacon_app/features/admin/presentation/admin_screen.dart';
+import 'package:beacon_app/features/admin/presentation/attendance_status_popup.dart';
 import 'package:beacon_app/features/admin/presentation/admin_session_card.dart';
 import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
@@ -73,11 +74,16 @@ class _ScriptedSessionRepository implements SessionRepository {
   final List<(int recordId, AttendanceStatus status, String? note)> statusUpdates = [];
   final List<(int memberId, AttendanceStatus status)> manualAdds = [];
 
+  bool attendanceThrows = false;
+
   @override
   Future<List<AdminAttendanceRecord>> fetchAttendance({
     required int clubId,
     required int sessionId,
-  }) async => attendanceRecords;
+  }) async {
+    if (attendanceThrows) throw Exception('조회 실패');
+    return attendanceRecords;
+  }
 
   @override
   Future<void> updateAttendanceStatus({
@@ -455,6 +461,132 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('비콘 키 입력'), findsOneWidget);
+  });
+
+  group('출석 현황', () {
+    AdminAttendanceRecord record({
+      required int id,
+      required String name,
+      required AttendanceStatus status,
+      DateTime? checkedAt,
+      bool isManual = false,
+    }) => AdminAttendanceRecord(
+      recordId: id,
+      memberId: id,
+      memberName: name,
+      stdId: '2025000$id',
+      attendanceStatus: status,
+      checkedAt: checkedAt,
+      isManual: isManual,
+    );
+
+    testWidgets('카드를 눌러 출석 현황을 열면 요약과 목록이 보인다', (tester) async {
+      // 웹은 7열 표(`356:1800`)인데 390px에 안 들어간다 — 정보를 버리지 않고
+      // 재배치했는지 확인한다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        record(
+          id: 1,
+          name: '강네모',
+          status: AttendanceStatus.present,
+          checkedAt: DateTime.utc(2026, 4, 7, 9, 20),
+        ),
+        record(id: 2, name: '박신한', status: AttendanceStatus.late, checkedAt: DateTime.utc(2026, 4, 7, 9, 25)),
+        record(id: 3, name: '정세모', status: AttendanceStatus.absent, isManual: true),
+      ];
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('강네모'), findsOneWidget);
+      expect(find.text('20250001'), findsOneWidget, reason: '학번 열도 살아 있다');
+      expect(find.text('6:20'), findsOneWidget, reason: '체크인 시각은 KST로 읽는다');
+      expect(find.text('6:25'), findsOneWidget);
+      expect(find.text('-'), findsOneWidget, reason: '결석은 체크인이 없다');
+      expect(find.text('수동'), findsOneWidget, reason: '자동은 표시하지 않는다');
+    });
+
+    testWidgets('요약 네 칸이 각 상태 수를 따로 센다', (tester) async {
+      // 잡아야 할 잘못된 구현: 상태 매핑이 뒤바뀐다. **네 수를 전부 다르게**
+      // 만들어야 구별된다 — 같은 수가 섞이면 뒤바뀌어도 통과한다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        for (var i = 0; i < 5; i++)
+          record(id: i, name: 'p$i', status: AttendanceStatus.present),
+        record(id: 10, name: 'l', status: AttendanceStatus.late),
+        for (var i = 0; i < 2; i++)
+          record(id: 20 + i, name: 'a$i', status: AttendanceStatus.absent),
+        for (var i = 0; i < 3; i++)
+          record(id: 30 + i, name: 'e$i', status: AttendanceStatus.etc),
+      ];
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('5'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+      expect(find.text('3'), findsOneWidget);
+    });
+
+    testWidgets('행을 눌러 상태를 바꾸면 서버로 보내고 목록이 갱신된다', (tester) async {
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        record(id: 1, name: '강네모', status: AttendanceStatus.absent),
+      ];
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('강네모'));
+      await tester.pumpAndSettle();
+      expect(find.text('20250001'), findsWidgets, reason: '누구를 바꾸는지 보여준다');
+
+      // 시트 뒤의 요약 라벨과 팝업의 선택지가 같은 문구다 — 어느 쪽을
+      // 눌렀는지 분명히 하려면 팝업 안으로 한정해야 한다.
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AttendanceStatusPopupContent),
+          matching: find.text('지각'),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('변경하기'));
+      await tester.pumpAndSettle();
+
+      expect(repo.statusUpdates, hasLength(1));
+      expect(repo.statusUpdates.single.$1, 1);
+      expect(repo.statusUpdates.single.$2, AttendanceStatus.late);
+    });
+
+    testWidgets('조회가 실패하면 빈 목록이 아니라 실패를 알린다', (tester) async {
+      // 잡아야 할 잘못된 구현: 실패를 빈 목록으로 접는다 — 관리자가
+      // "아무도 출석하지 않았다"로 읽는다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceThrows = true;
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('출석 현황을 불러오지 못했습니다'), findsOneWidget);
+      expect(find.text('아직 출석 기록이 없습니다'), findsNothing);
+    });
   });
 
   testWidgets('시작 버튼은 예정 세션에만 붙는다', (tester) async {
