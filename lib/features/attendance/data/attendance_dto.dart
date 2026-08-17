@@ -43,6 +43,17 @@ enum AttendanceStatus {
   /// 모든 판정은 서버가 최종 결정하므로, 여기서 실수로 기본값을 골라주면
   /// (예: 모르는 값을 조용히 `present`로) "서버가 내려준 상태를 그대로
   /// 보여준다"는 보증이 깨진다.
+  /// 서버로 되돌려 보낼 문자열. [fromWire]의 짝이다 — 관리자가 출석 상태를
+  /// 손으로 바꿀 때(`PATCH .../attendance/{recordId}`) 이 값을 보낸다.
+  ///
+  /// Dart enum 이름(`present`)을 그대로 보내면 서버가 알아듣지 못한다.
+  String get wire => switch (this) {
+    AttendanceStatus.present => 'PRESENT',
+    AttendanceStatus.late => 'LATE',
+    AttendanceStatus.absent => 'ABSENT',
+    AttendanceStatus.etc => 'ETC',
+  };
+
   static AttendanceStatus fromWire(String wire) => switch (wire) {
     'PRESENT' => AttendanceStatus.present,
     'LATE' => AttendanceStatus.late,

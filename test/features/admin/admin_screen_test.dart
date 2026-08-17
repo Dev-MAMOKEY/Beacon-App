@@ -1,6 +1,8 @@
 import 'package:beacon_app/core/theme/app_colors.dart';
+import 'package:beacon_app/features/attendance/data/attendance_dto.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
 import 'package:beacon_app/features/admin/data/beacon_psk_store.dart';
+import 'package:beacon_app/features/admin/data/attendance_admin_dto.dart';
 import 'package:beacon_app/features/admin/data/club_member_repository.dart';
 import 'package:beacon_app/features/admin/data/session_dto.dart';
 import 'package:beacon_app/features/admin/data/session_repository.dart';
@@ -66,6 +68,54 @@ class _ScriptedSessionRepository implements SessionRepository {
   final List<int> deletedSessionIds = [];
   final List<int> startedSessionIds = [];
   bool startThrows = false;
+
+  List<AdminAttendanceRecord> attendanceRecords = [];
+  final List<(int recordId, AttendanceStatus status, String? note)> statusUpdates = [];
+  final List<(int memberId, AttendanceStatus status)> manualAdds = [];
+
+  @override
+  Future<List<AdminAttendanceRecord>> fetchAttendance({
+    required int clubId,
+    required int sessionId,
+  }) async => attendanceRecords;
+
+  @override
+  Future<void> updateAttendanceStatus({
+    required int clubId,
+    required int sessionId,
+    required int recordId,
+    required AttendanceStatus status,
+    String? adminNote,
+  }) async {
+    statusUpdates.add((recordId, status, adminNote));
+    attendanceRecords = attendanceRecords
+        .map(
+          (r) => r.recordId == recordId
+              ? AdminAttendanceRecord(
+                  recordId: r.recordId,
+                  memberId: r.memberId,
+                  memberName: r.memberName,
+                  stdId: r.stdId,
+                  attendanceStatus: status,
+                  checkedAt: r.checkedAt,
+                  isManual: true,
+                  adminNote: adminNote,
+                )
+              : r,
+        )
+        .toList();
+  }
+
+  @override
+  Future<void> addManualAttendance({
+    required int clubId,
+    required int sessionId,
+    required int memberId,
+    required AttendanceStatus status,
+    String? adminNote,
+  }) async {
+    manualAdds.add((memberId, status));
+  }
 
   @override
   Future<void> create({required int clubId, required SessionDraft draft}) async {

@@ -2,6 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/network/dio_provider.dart';
+import '../../attendance/data/attendance_dto.dart';
+import 'attendance_admin_dto.dart';
 import 'session_dto.dart';
 
 /// 관리자 화면이 쓰는 세션 API.
@@ -33,6 +35,33 @@ abstract interface class SessionRepository {
   Future<SessionStartResult> start({required int clubId, required int sessionId});
 
   Future<void> end({required int clubId, required int sessionId});
+
+  /// 세션의 출석 현황 전체. 페이지를 이어 받아 하나로 합친다.
+  ///
+  /// 요약(출석·지각·결석·기타 수)은 서버가 주지 않아 이 목록에서 센다 —
+  /// 이미 전부 받았으니 추가 요청은 없다.
+  Future<List<AdminAttendanceRecord>> fetchAttendance({
+    required int clubId,
+    required int sessionId,
+  });
+
+  /// 한 기록의 출석 상태를 손으로 바꾼다.
+  Future<void> updateAttendanceStatus({
+    required int clubId,
+    required int sessionId,
+    required int recordId,
+    required AttendanceStatus status,
+    String? adminNote,
+  });
+
+  /// 체크인하지 않은 부원을 손으로 출석 처리한다.
+  Future<void> addManualAttendance({
+    required int clubId,
+    required int sessionId,
+    required int memberId,
+    required AttendanceStatus status,
+    String? adminNote,
+  });
 
   /// 그 세션에 **출석으로 기록된 인원 수**.
   ///
@@ -118,6 +147,63 @@ class HttpSessionRepository implements SessionRepository {
   }
 
   @override
+  Future<List<AdminAttendanceRecord>> fetchAttendance({
+    required int clubId,
+    required int sessionId,
+  }) async {
+    final all = <AdminAttendanceRecord>[];
+    var page = 0;
+    while (true) {
+      final result = await _client.get<({List<AdminAttendanceRecord> items, bool isLast})>(
+        '/clubs/$clubId/sessions/$sessionId/attendance',
+        query: {'page': page, 'size': _attendancePageSize},
+        parse: _parseAttendancePage,
+      );
+      all.addAll(result.items);
+      if (result.isLast) return all;
+      page++;
+      if (page > 50) return all;
+    }
+  }
+
+  @override
+  Future<void> updateAttendanceStatus({
+    required int clubId,
+    required int sessionId,
+    required int recordId,
+    required AttendanceStatus status,
+    String? adminNote,
+  }) {
+    return _client.patch<void>(
+      '/clubs/$clubId/sessions/$sessionId/attendance/$recordId',
+      body: {
+        'attendanceStatus': status.wire,
+        if (adminNote != null && adminNote.isNotEmpty) 'adminNote': adminNote,
+      },
+      parse: (_) {},
+    );
+  }
+
+  @override
+  Future<void> addManualAttendance({
+    required int clubId,
+    required int sessionId,
+    required int memberId,
+    required AttendanceStatus status,
+    String? adminNote,
+  }) {
+    return _client.post<void>(
+      '/clubs/$clubId/sessions/$sessionId/attendance/manual',
+      body: {
+        'memberId': memberId,
+        'attendanceStatus': status.wire,
+        if (adminNote != null && adminNote.isNotEmpty) 'adminNote': adminNote,
+      },
+      parse: (_) {},
+    );
+  }
+
+  @override
   Future<int> countAttendees({required int clubId, required int sessionId}) async {
     var total = 0;
     var page = 0;
@@ -148,6 +234,14 @@ SessionPage _parseSessionPage(Object? json) {
     // 으로 본다 — 멈추는 쪽이 안전한 기본값이다.
     isLast: map['last'] as bool? ?? true,
   );
+}
+
+({List<AdminAttendanceRecord> items, bool isLast}) _parseAttendancePage(Object? json) {
+  final map = json! as Map<String, dynamic>;
+  final content = (map['content'] as List<dynamic>? ?? const [])
+      .map((item) => AdminAttendanceRecord.fromJson(item as Map<String, dynamic>))
+      .toList();
+  return (items: content, isLast: map['last'] as bool? ?? true);
 }
 
 ({int count, bool isLast}) _parseAttendanceCount(Object? json) {

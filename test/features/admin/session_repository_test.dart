@@ -1,4 +1,6 @@
 import 'package:beacon_app/core/network/api_client.dart';
+import 'package:beacon_app/features/attendance/data/attendance_dto.dart';
+import 'package:beacon_app/features/admin/data/attendance_admin_dto.dart';
 import 'package:beacon_app/features/admin/data/session_dto.dart';
 import 'package:beacon_app/features/admin/data/session_repository.dart';
 import 'package:dio/dio.dart';
@@ -260,4 +262,171 @@ void main() {
       expect(await repository.countAttendees(clubId: 7, sessionId: 4), 3);
     });
   });
+
+  group('출석 현황', () {
+    test('여러 페이지를 이어 받아 하나로 합친다', () async {
+      // 잡아야 할 잘못된 구현: 첫 페이지만 받는다. `SliceAttendanceDto`에는
+      // `totalElements`가 없어 이어 받는 것 말고는 전체를 알 방법이 없다.
+      adapter
+        ..onGet(
+          '/clubs/7/sessions/4/attendance',
+          (server) => server.reply(200, {
+            'success': true,
+            'data': {
+              'content': [
+                {
+                  'recordId': 1,
+                  'memberId': 11,
+                  'memberName': '강네모',
+                  'stdId': '20251149',
+                  'attendanceStatus': 'PRESENT',
+                  'checkedAt': '2026-04-07T09:20:00Z',
+                  'isManual': false,
+                },
+              ],
+              'last': false,
+            },
+          }),
+          queryParameters: {'page': 0, 'size': 100},
+        )
+        ..onGet(
+          '/clubs/7/sessions/4/attendance',
+          (server) => server.reply(200, {
+            'success': true,
+            'data': {
+              'content': [
+                {
+                  'recordId': 2,
+                  'memberId': 12,
+                  'memberName': '정세모',
+                  'stdId': '20251008',
+                  'attendanceStatus': 'ABSENT',
+                  'checkedAt': null,
+                  'isManual': true,
+                  'adminNote': '병결',
+                },
+              ],
+              'last': true,
+            },
+          }),
+          queryParameters: {'page': 1, 'size': 100},
+        );
+
+      final records = await repository.fetchAttendance(clubId: 7, sessionId: 4);
+
+      expect(records, hasLength(2));
+      expect(records.first.memberName, '강네모');
+      expect(records.first.checkedAt, DateTime.utc(2026, 4, 7, 9, 20));
+      expect(records.first.isManual, isFalse);
+      expect(records.last.attendanceStatus, AttendanceStatus.absent);
+      expect(records.last.checkedAt, isNull, reason: '결석은 체크인 자체가 없다');
+      expect(records.last.adminNote, '병결');
+    });
+
+    test('상태 변경은 서버 enum 문자열로 보낸다', () async {
+      // 잡아야 할 잘못된 구현: Dart enum 이름(`late`)을 그대로 보낸다 —
+      // 서버는 `LATE`만 안다.
+      adapter.onPatch(
+        '/clubs/7/sessions/4/attendance/9',
+        (server) => server.reply(200, {'success': true, 'data': null}),
+        data: {'attendanceStatus': 'LATE'},
+      );
+
+      await expectLater(
+        repository.updateAttendanceStatus(
+          clubId: 7,
+          sessionId: 4,
+          recordId: 9,
+          status: AttendanceStatus.late,
+        ),
+        completes,
+      );
+    });
+
+    test('메모가 있으면 함께 보내고, 비어 있으면 키 자체를 넣지 않는다', () async {
+      // 잡아야 할 잘못된 구현: 빈 문자열을 그대로 보낸다 — 서버가 기존
+      // 메모를 빈 값으로 덮어쓸 수 있다.
+      adapter.onPatch(
+        '/clubs/7/sessions/4/attendance/9',
+        (server) => server.reply(200, {'success': true, 'data': null}),
+        data: {'attendanceStatus': 'ETC', 'adminNote': '공결'},
+      );
+      await expectLater(
+        repository.updateAttendanceStatus(
+          clubId: 7,
+          sessionId: 4,
+          recordId: 9,
+          status: AttendanceStatus.etc,
+          adminNote: '공결',
+        ),
+        completes,
+      );
+
+      adapter.onPatch(
+        '/clubs/7/sessions/4/attendance/10',
+        (server) => server.reply(200, {'success': true, 'data': null}),
+        data: {'attendanceStatus': 'ETC'},
+      );
+      await expectLater(
+        repository.updateAttendanceStatus(
+          clubId: 7,
+          sessionId: 4,
+          recordId: 10,
+          status: AttendanceStatus.etc,
+          adminNote: '',
+        ),
+        completes,
+      );
+    });
+
+    test('수동 출석은 memberId와 상태를 보낸다', () async {
+      adapter.onPost(
+        '/clubs/7/sessions/4/attendance/manual',
+        (server) => server.reply(200, {'success': true, 'data': null}),
+        data: {'memberId': 12, 'attendanceStatus': 'PRESENT'},
+      );
+
+      await expectLater(
+        repository.addManualAttendance(
+          clubId: 7,
+          sessionId: 4,
+          memberId: 12,
+          status: AttendanceStatus.present,
+        ),
+        completes,
+      );
+    });
+  });
+
+  group('출석 요약', () {
+    test('목록에서 네 상태를 각각 센다', () {
+      // 잡아야 할 잘못된 구현: 하나의 카운터만 쓰거나 상태를 잘못 매핑한다.
+      // **네 수를 전부 다르게** 만들어야 어느 칸이 어느 상태인지 구별된다 —
+      // 같은 수가 섞이면 매핑이 뒤바뀌어도 통과한다.
+      AdminAttendanceRecord record(AttendanceStatus status, int id) => AdminAttendanceRecord(
+        recordId: id,
+        memberId: id,
+        memberName: 'n',
+        stdId: 's',
+        attendanceStatus: status,
+      );
+
+      final summary = AttendanceSummary.of([
+        record(AttendanceStatus.present, 1),
+        record(AttendanceStatus.present, 2),
+        record(AttendanceStatus.present, 3),
+        record(AttendanceStatus.present, 4),
+        record(AttendanceStatus.present, 5),
+        record(AttendanceStatus.late, 6),
+        record(AttendanceStatus.absent, 7),
+        record(AttendanceStatus.absent, 8),
+      ]);
+
+      expect(summary.present, 5);
+      expect(summary.late, 1);
+      expect(summary.absent, 2);
+      expect(summary.etc, 0);
+    });
+  });
+
 }
