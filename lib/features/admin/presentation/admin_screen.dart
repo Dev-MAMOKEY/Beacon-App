@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../components/ui/app_logo.dart';
+import '../../../components/ui/button.dart';
+import '../../../components/ui/owned_routes.dart';
+import '../../../components/ui/popup.dart';
 import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
@@ -13,6 +16,7 @@ import '../data/session_dto.dart';
 import '../data/session_repository.dart';
 import 'admin_role_controller.dart';
 import 'admin_session_card.dart';
+import 'session_form_popup.dart';
 
 /// 관리자 세션 관리 화면(Figma `353:2033` "관리자 페이지").
 ///
@@ -43,6 +47,26 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 
   int? _attendeeCount;
   bool _ending = false;
+  bool _starting = false;
+
+  late final NavigatorState _rootNavigator;
+
+  /// 이 화면이 루트 내비게이터에 push한 팝업. 숨겨진 동안 push를 거부하는
+  /// 것이 이 소유자의 책임이다(#47).
+  late final OwnedRoutes _owned = OwnedRoutes(_rootNavigator);
+
+  @override
+  void initState() {
+    super.initState();
+    _rootNavigator = appPopupNavigatorOf(context);
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    _owned.closeAll();
+    super.dispose();
+  }
 
   @override
   void didChangeDependencies() {
@@ -50,6 +74,12 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     final visible = TickerMode.valuesOf(context).enabled;
     if (visible == _visible) return;
     _visible = visible;
+    _owned.visible = visible;
+    if (!visible) {
+      // 탭을 떠나면 열려 있던 폼을 닫는다 — 남겨 두면 다음 탭 위에 뜬다.
+      final routes = _owned.take();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _owned.removeAll(routes));
+    }
     // 다시 보이는 순간 목록을 새로 읽는다 — 다른 탭에 있는 동안 세션이
     // 시작·종료됐을 수 있다.
     if (visible) {
@@ -130,6 +160,107 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     }
   }
 
+  /// 세션을 시작하고 출석 코드를 받아 둔다.
+  ///
+  /// 응답의 `uuid`는 #15의 GATT 명령 페이로드가 쓴다 — BLE 전송이 아직
+  /// 없어서 지금은 코드만 화면에 띄운다.
+  Future<void> _startSession(int clubId, AdminSession session) async {
+    if (_starting) return;
+    setState(() => _starting = true);
+    try {
+      final result = await ref
+          .read(sessionRepositoryProvider)
+          .start(clubId: clubId, sessionId: session.sessionId);
+      if (!mounted) return;
+      _otpCodeBySession[session.sessionId] = result.otpCode;
+      await _load(clubId);
+    } catch (_) {
+      if (!mounted || !_visible) return;
+      showAppToast(context, '세션을 시작하지 못했습니다. 다시 시도해주세요.');
+    } finally {
+      if (mounted) setState(() => _starting = false);
+    }
+  }
+
+  void _openForm(int clubId, {AdminSession? initial}) {
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (context) => SessionFormPopupContent(
+          initial: initial,
+          onCancel: _owned.closeAll,
+          onSubmit: (draft) async {
+            final repository = ref.read(sessionRepositoryProvider);
+            if (initial == null) {
+              await repository.create(clubId: clubId, draft: draft);
+            } else {
+              await repository.update(
+                clubId: clubId,
+                sessionId: initial.sessionId,
+                draft: draft,
+              );
+            }
+            if (!mounted) return;
+            _owned.closeAll();
+            await _load(clubId);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 이미 만들어진 세션의 수정·삭제. Figma에 이 진입점이 없어(모바일
+  /// 디자인은 목록 하나뿐이다) 카드 탭으로 열도록 했다(#14에 기록).
+  void _openActions(int clubId, AdminSession session) {
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (context) => _SessionActionsContent(
+          sessionName: session.sessionName,
+          onEdit: () {
+            _owned.closeAll();
+            _openForm(clubId, initial: session);
+          },
+          onDelete: () async {
+            _owned.closeAll();
+            await _confirmDelete(clubId, session);
+          },
+          onCancel: _owned.closeAll,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(int clubId, AdminSession session) async {
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        // 팝업 빌더의 context를 가리면 아래 콜백의 `context`가 이미 닫힌
+        // 팝업의 것이 된다 — 토스트는 이 화면(State)의 context로 띄운다.
+        builder: (_) => _DeleteConfirmContent(
+          sessionName: session.sessionName,
+          onCancel: _owned.closeAll,
+          onConfirm: () async {
+            _owned.closeAll();
+            try {
+              await ref
+                  .read(sessionRepositoryProvider)
+                  .delete(clubId: clubId, sessionId: session.sessionId);
+              if (!mounted) return;
+              await _load(clubId);
+            } catch (_) {
+              if (!mounted || !_visible) return;
+              showAppToast(context, '세션을 삭제하지 못했습니다.');
+            }
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
@@ -185,18 +316,26 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
                                 : () => unawaited(_endSession(clubId, item)),
                           );
                         }
-                        return EndedSessionCard(session: item, onTap: () {});
+                        return EndedSessionCard(
+                          session: item,
+                          onTap: clubId == null ? () {} : () => _openActions(clubId, item),
+                          onStart: item.status == SessionStatus.scheduled && clubId != null
+                              ? () => unawaited(_startSession(clubId, item))
+                              : null,
+                          isStarting: _starting,
+                        );
                       },
                     ),
             ),
           ],
         ),
       ),
-      floatingActionButton: _CreateSessionButton(
-        onPressed: () {
-          // 생성 폼은 후속 커밋에서 붙인다.
-        },
-      ),
+      floatingActionButton: clubId == null
+          ? null
+          : _CreateSessionButton(
+              key: const ValueKey('admin_create_session'),
+              onPressed: () => _openForm(clubId),
+            ),
     );
   }
 }
@@ -204,6 +343,10 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 class _AdminTopBar extends StatelessWidget {
   const _AdminTopBar();
 
+  /// 세션을 시작하고 출석 코드를 받아 둔다.
+  ///
+  /// 응답의 `uuid`는 #15의 GATT 명령 페이로드가 쓴다 — BLE 전송이 아직
+  /// 없어서 지금은 코드만 화면에 띄운다.
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
@@ -236,10 +379,14 @@ class _AdminTopBar extends StatelessWidget {
 }
 
 class _CreateSessionButton extends StatelessWidget {
-  const _CreateSessionButton({required this.onPressed});
+  const _CreateSessionButton({super.key, required this.onPressed});
 
   final VoidCallback onPressed;
 
+  /// 세션을 시작하고 출석 코드를 받아 둔다.
+  ///
+  /// 응답의 `uuid`는 #15의 GATT 명령 페이로드가 쓴다 — BLE 전송이 아직
+  /// 없어서 지금은 코드만 화면에 띄운다.
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
@@ -270,6 +417,99 @@ class _CreateSessionButton extends StatelessWidget {
           colorFilter: ColorFilter.mode(colors.bg, BlendMode.srcIn),
         ),
       ),
+    );
+  }
+}
+
+/// 세션 카드를 눌렀을 때의 수정·삭제 선택. Figma에 이 진입점이 없어
+/// 다른 팝업들과 같은 구성(제목 + 세로 버튼)으로 맞췄다.
+class _SessionActionsContent extends StatelessWidget {
+  const _SessionActionsContent({
+    required this.sessionName,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onCancel,
+  });
+
+  final String sessionName;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    final typography = Theme.of(context).extension<AppTypography>()!;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          sessionName,
+          textAlign: TextAlign.center,
+          style: typography.title4.copyWith(color: colors.gray3),
+        ),
+        const SizedBox(height: 24),
+        AppButton(label: '수정하기', size: ButtonSize.md, onPressed: onEdit),
+        const SizedBox(height: 12),
+        AppButton.destructive(label: '삭제하기', size: ButtonSize.md, onPressed: onDelete),
+        const SizedBox(height: 12),
+        AppButton.cancel(label: '취소', size: ButtonSize.md, onPressed: onCancel),
+      ],
+    );
+  }
+}
+
+/// 삭제 확인. 확인 없이 지우면 되돌릴 방법이 없다.
+class _DeleteConfirmContent extends StatelessWidget {
+  const _DeleteConfirmContent({
+    required this.sessionName,
+    required this.onConfirm,
+    required this.onCancel,
+  });
+
+  final String sessionName;
+  final VoidCallback onConfirm;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    final typography = Theme.of(context).extension<AppTypography>()!;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '세션 삭제',
+          textAlign: TextAlign.center,
+          style: typography.title4.copyWith(color: colors.gray3),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          '$sessionName을(를) 삭제할까요?\n삭제한 세션은 되돌릴 수 없습니다.',
+          textAlign: TextAlign.center,
+          style: typography.body3.copyWith(color: colors.gray2),
+        ),
+        const SizedBox(height: 24),
+        Row(
+          children: [
+            Expanded(
+              child: AppButton.cancel(label: '취소', size: ButtonSize.md, onPressed: onCancel),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: AppButton.destructive(
+                label: '삭제',
+                size: ButtonSize.md,
+                onPressed: onConfirm,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

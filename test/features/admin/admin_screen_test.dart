@@ -60,22 +60,50 @@ class _ScriptedSessionRepository implements SessionRepository {
         .toList();
   }
 
+  final List<SessionDraft> created = [];
+  final List<(int sessionId, SessionDraft draft)> updated = [];
+  final List<int> deletedSessionIds = [];
+  final List<int> startedSessionIds = [];
+  bool startThrows = false;
+
   @override
-  Future<void> create({required int clubId, required SessionDraft draft}) async {}
+  Future<void> create({required int clubId, required SessionDraft draft}) async {
+    created.add(draft);
+  }
 
   @override
   Future<void> update({
     required int clubId,
     required int sessionId,
     required SessionDraft draft,
-  }) async {}
+  }) async {
+    updated.add((sessionId, draft));
+  }
 
   @override
-  Future<void> delete({required int clubId, required int sessionId}) async {}
+  Future<void> delete({required int clubId, required int sessionId}) async {
+    deletedSessionIds.add(sessionId);
+    sessions = sessions.where((s) => s.sessionId != sessionId).toList();
+  }
 
   @override
-  Future<SessionStartResult> start({required int clubId, required int sessionId}) async =>
-      const SessionStartResult(otpCode: '7329', uuid: 'u');
+  Future<SessionStartResult> start({required int clubId, required int sessionId}) async {
+    startedSessionIds.add(sessionId);
+    if (startThrows) throw Exception('시작 실패');
+    sessions = sessions
+        .map(
+          (s) => s.sessionId == sessionId
+              ? AdminSession(
+                  sessionId: s.sessionId,
+                  sessionName: s.sessionName,
+                  status: SessionStatus.active,
+                  expectStartAt: s.expectStartAt,
+                )
+              : s,
+        )
+        .toList();
+    return const SessionStartResult(otpCode: '7329', uuid: 'u');
+  }
 }
 
 class _StubMemberRepository implements ClubMemberRepository {
@@ -258,6 +286,104 @@ void main() {
 
     expect(find.byType(ActiveSessionCard), findsNothing);
     expect(find.text('세션을 불러오지 못했습니다'), findsOneWidget);
+  });
+
+  testWidgets('예정 세션에는 시작 버튼이 있고, 시작하면 출석 코드가 보인다', (tester) async {
+    // Figma에 예정 세션 카드가 없어(진행 중·종료 두 종류뿐) 종료 카드 모양에
+    // 시작 버튼만 얹었다 — 시작 경로가 없으면 세션을 만들어도 쓸 수 없다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 5, status: SessionStatus.scheduled)],
+    );
+    await _pumpAdmin(tester, repository: repo);
+
+    expect(find.text('예정'), findsOneWidget);
+    await tester.tap(find.text('출석 시작하기'));
+    await tester.pumpAndSettle();
+
+    expect(repo.startedSessionIds, [5]);
+    expect(find.byType(ActiveSessionCard), findsOneWidget);
+    expect(find.text('7329'), findsOneWidget, reason: '시작 응답의 코드를 그대로 보여준다');
+  });
+
+  testWidgets('시작 버튼은 예정 세션에만 붙는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 상태와 무관하게 시작 버튼을 단다.
+    // - 진행 중 세션을 다시 시작하면 서버가 새 코드를 발급해 부원이 든
+    //   코드가 죽는다.
+    // - **끝난 세션에도 붙는다** — 진행 중 카드만 확인하면 이 쪽을 놓친다
+    //   (실제로 처음엔 놓쳤다).
+    final repo = _ScriptedSessionRepository(
+      sessions: [
+        _session(id: 4, status: SessionStatus.active),
+        _session(id: 3, status: SessionStatus.ended),
+        _session(id: 5, status: SessionStatus.scheduled),
+      ],
+    );
+    await _pumpAdmin(tester, repository: repo);
+
+    expect(
+      find.text('출석 시작하기'),
+      findsOneWidget,
+      reason: '예정 세션 하나에만 있어야 한다 — 진행 중·종료에는 없다',
+    );
+  });
+
+  testWidgets('FAB로 세션을 만들면 이름과 두 시각을 함께 보낸다', (tester) async {
+    // 서버 `SessionCreateRequestDto`의 required는 sessionName·expectStartAt·
+    // **expectEndAt** 셋이다 — 이슈는 "이름, 예정 시간만"이라고 적었지만
+    // 종료 예정 시각 없이는 생성이 되지 않는다.
+    final repo = _ScriptedSessionRepository(sessions: []);
+    await _pumpAdmin(tester, repository: repo);
+
+    await tester.tap(find.byKey(const ValueKey('admin_create_session')));
+    await tester.pumpAndSettle();
+    expect(find.text('세션 만들기'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '정기모임');
+    await tester.tap(find.text('만들기'));
+    await tester.pumpAndSettle();
+
+    expect(repo.created, hasLength(1));
+    final draft = repo.created.single;
+    expect(draft.sessionName, '정기모임');
+    expect(draft.expectEndAt.isAfter(draft.expectStartAt), isTrue);
+  });
+
+  testWidgets('이름이 비면 요청을 보내지 않고 팝업 안에 메시지를 남긴다', (tester) async {
+    // 메시지가 토스트면 팝업 스크림 아래로 가려진다(#42) — 팝업 안에 적어야
+    // 한다.
+    final repo = _ScriptedSessionRepository(sessions: []);
+    await _pumpAdmin(tester, repository: repo);
+
+    await tester.tap(find.byKey(const ValueKey('admin_create_session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('만들기'));
+    await tester.pumpAndSettle();
+
+    expect(repo.created, isEmpty);
+    expect(find.text('세션 이름을 입력해주세요'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('카드를 누르면 수정·삭제를 고를 수 있고 삭제는 확인을 받는다', (tester) async {
+    // 잡아야 할 잘못된 구현: 확인 없이 곧장 지운다 — 되돌릴 방법이 없다.
+    final repo = _ScriptedSessionRepository(
+      sessions: [_session(id: 3, status: SessionStatus.ended)],
+    );
+    await _pumpAdmin(tester, repository: repo);
+
+    await tester.tap(find.byType(EndedSessionCard));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('삭제하기'));
+    await tester.pumpAndSettle();
+
+    expect(repo.deletedSessionIds, isEmpty, reason: '확인 전에는 지우지 않는다');
+    expect(find.text('세션 삭제'), findsOneWidget);
+
+    await tester.tap(find.text('삭제'));
+    await tester.pumpAndSettle();
+
+    expect(repo.deletedSessionIds, [3]);
+    expect(find.byType(EndedSessionCard), findsNothing);
   });
 
   testWidgets('진행 중 배지와 종료 버튼이 실측 색을 쓴다', (tester) async {

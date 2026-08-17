@@ -92,10 +92,23 @@ class ActiveSessionCard extends StatelessWidget {
 
 /// 종료된 세션 카드(Figma `353:2459`).
 class EndedSessionCard extends StatelessWidget {
-  const EndedSessionCard({super.key, required this.session, required this.onTap});
+  const EndedSessionCard({
+    super.key,
+    required this.session,
+    required this.onTap,
+    this.onStart,
+    this.isStarting = false,
+  });
 
   final AdminSession session;
   final VoidCallback onTap;
+
+  /// 아직 시작하지 않은 세션에만 준다. Figma에는 예정 세션 카드가 없어서
+  /// (모바일 디자인은 진행 중·종료 두 종류뿐이다) 종료 카드 모양에 시작
+  /// 버튼만 얹었다 — 시작 경로가 없으면 세션을 만들어도 쓸 수 없다.
+  final VoidCallback? onStart;
+
+  final bool isStarting;
 
   @override
   Widget build(BuildContext context) {
@@ -124,8 +137,49 @@ class EndedSessionCard extends StatelessWidget {
             // 출석인원 자리는 **비워 둔다.** `SessionResponseDto`에 인원이
             // 없고, 세는 유일한 방법(`GET .../attendance`)을 카드마다 부르면
             // 목록 하나에 요청이 N번 나간다. 진행 중 세션만 센다(#14 판정).
+            if (onStart != null) ...[
+              const SizedBox(height: 16),
+              _StartButton(onPressed: onStart!, isLoading: isStarting),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _StartButton extends StatelessWidget {
+  const _StartButton({required this.onPressed, required this.isLoading});
+
+  final VoidCallback onPressed;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+    final typography = Theme.of(context).extension<AppTypography>()!;
+
+    return GestureDetector(
+      onTap: isLoading ? null : onPressed,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: colors.main,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: isLoading
+            ? SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(colors.white),
+                ),
+              )
+            : Text('출석 시작하기', style: typography.title6.copyWith(color: colors.bg)),
       ),
     );
   }
