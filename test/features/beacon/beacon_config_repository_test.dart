@@ -1,5 +1,6 @@
 import 'package:beacon_app/core/network/api_client.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
+import 'package:beacon_app/features/beacon/data/beacon_config_dto.dart';
 import 'package:beacon_app/features/beacon/data/beacon_config_repository.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,9 +18,19 @@ void main() {
   late Dio dio;
   late DioAdapter adapter;
   late HttpBeaconConfigRepository repository;
+  late List<RequestOptions> sent;
 
   setUp(() {
     dio = Dio(BaseOptions(baseUrl: 'http://test.local'));
+    sent = [];
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          sent.add(options);
+          handler.next(options);
+        },
+      ),
+    );
     adapter = DioAdapter(
       dio: dio,
       matcher: const FullHttpRequestMatcher(needsExactBody: true),
@@ -159,5 +170,117 @@ void main() {
     );
 
     await expectLater(repository.fetch(13), throwsA(isA<ApiException>()));
+  });
+
+  group('설정 수정', () {
+    const stored = BeaconConfig(
+      uuid: 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+      lateThresholdMinutes: 10,
+      rssiStabilizationSeconds: 3,
+      rssiThreshold: -70,
+    );
+
+    test('네 필드를 전부 담아 PUT한다', () async {
+      // `PUT /clubs/{id}/beacon`은 네 필드가 전부 required인 **전체 교체**다.
+      // uuid만 담아 보내면 지각 기준·안정화 시간·임계값이 함께 사라진다.
+      final next = stored.copyWith(uuid: '11111111-2222-3333-4444-555555555555');
+      adapter.onPut(
+        '/clubs/7/beacon',
+        (server) => server.reply(200, {
+          'success': true,
+          'data': {
+            'uuid': '11111111-2222-3333-4444-555555555555',
+            'lateThresholdMinutes': 10,
+            'rssiStabilizationSeconds': 3,
+            'rssiThreshold': -70,
+          },
+        }),
+        data: {
+          'uuid': '11111111-2222-3333-4444-555555555555',
+          'lateThresholdMinutes': 10,
+          'rssiStabilizationSeconds': 3,
+          'rssiThreshold': -70,
+        },
+      );
+
+      final saved = await repository.update(7, next);
+
+      expect(sent.single.method, 'PUT');
+      expect(sent.single.data, {
+        'uuid': '11111111-2222-3333-4444-555555555555',
+        'lateThresholdMinutes': 10,
+        'rssiStabilizationSeconds': 3,
+        'rssiThreshold': -70,
+      });
+      expect(saved.uuid, '11111111-2222-3333-4444-555555555555');
+      expect(saved.lateThresholdMinutes, 10, reason: '보낸 값이 살아 돌아와야 한다');
+    });
+
+    test('서버가 다듬은 값을 돌려주면 그걸 쓴다', () async {
+      // 보낸 것을 그대로 화면에 반영하면, 서버가 조정한 값과 화면이 어긋난다.
+      adapter.onPut(
+        '/clubs/7/beacon',
+        (server) => server.reply(200, {
+          'success': true,
+          'data': {
+            'uuid': 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+            'lateThresholdMinutes': 15,
+            'rssiStabilizationSeconds': 3,
+            'rssiThreshold': -70,
+          },
+        }),
+        data: {
+          'uuid': 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+          'lateThresholdMinutes': 999,
+          'rssiStabilizationSeconds': 3,
+          'rssiThreshold': -70,
+        },
+      );
+
+      final saved = await repository.update(7, stored.copyWith(lateThresholdMinutes: 999));
+
+      expect(saved.lateThresholdMinutes, 15);
+    });
+
+    test('돌려받은 값도 조회와 같은 규칙으로 검증한다', () async {
+      // 저장 응답만 검증을 건너뛰면, 말이 안 되는 값이 그대로 화면과
+      // 스캐너 설정으로 흘러든다.
+      adapter.onPut(
+        '/clubs/7/beacon',
+        (server) => server.reply(200, {
+          'success': true,
+          'data': {
+            'uuid': 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+            'lateThresholdMinutes': 10,
+            'rssiStabilizationSeconds': 3,
+            'rssiThreshold': 0,
+          },
+        }),
+        data: {
+          'uuid': 'E2C56DB5-DFFB-48D2-B060-D0F5A71096E0',
+          'lateThresholdMinutes': 10,
+          'rssiStabilizationSeconds': 3,
+          'rssiThreshold': -70,
+        },
+      );
+
+      await expectLater(repository.update(7, stored), throwsA(isA<ApiException>()));
+    });
+
+    test('copyWith는 네 필드를 각각 덮을 수 있다', () {
+      // 한 필드만 덮어 보면, **덮지 못하는 필드**가 있어도(그 자리에
+      // `this.x`를 그대로 쓴 구현) 눈치채지 못한다. 넷을 각각 본다.
+      expect(stored.copyWith(uuid: 'X').uuid, 'X');
+      expect(stored.copyWith(lateThresholdMinutes: 25).lateThresholdMinutes, 25);
+      expect(stored.copyWith(rssiStabilizationSeconds: 9).rssiStabilizationSeconds, 9);
+      expect(stored.copyWith(rssiThreshold: -85).rssiThreshold, -85);
+    });
+
+    test('copyWith는 지정하지 않은 값을 그대로 둔다', () {
+      final next = stored.copyWith(rssiThreshold: -85);
+      expect(next.uuid, stored.uuid);
+      expect(next.lateThresholdMinutes, stored.lateThresholdMinutes);
+      expect(next.rssiStabilizationSeconds, stored.rssiStabilizationSeconds);
+    });
   });
 }

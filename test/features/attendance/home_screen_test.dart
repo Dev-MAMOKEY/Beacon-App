@@ -95,6 +95,12 @@ class _ReadySessionController extends SessionController {
 class _FakeBeaconConfigRepository implements BeaconConfigRepository {
   @override
   Future<BeaconConfig> fetch(int clubId) async => _beaconConfig;
+
+  /// 이 더블은 조회만 쓴다 — 부르면 테스트가 잘못 짜인 것이므로 조용히
+  /// 성공하지 않고 바로 터뜨린다.
+  @override
+  Future<BeaconConfig> update(int clubId, BeaconConfig config) =>
+      throw UnimplementedError();
 }
 
 /// 클럽별로 조회 완료 시점을 테스트가 직접 정하는 페이크 — "느리게 시작한
@@ -108,6 +114,12 @@ class _DeferredBeaconConfigRepository implements BeaconConfigRepository {
     requestedClubIds.add(clubId);
     return (_pending[clubId] ??= Completer<BeaconConfig>()).future;
   }
+
+  /// 이 더블은 조회만 쓴다 — 부르면 테스트가 잘못 짜인 것이므로 조용히
+  /// 성공하지 않고 바로 터뜨린다.
+  @override
+  Future<BeaconConfig> update(int clubId, BeaconConfig config) =>
+      throw UnimplementedError();
 
   void complete(int clubId, BeaconConfig config) {
     (_pending[clubId] ??= Completer<BeaconConfig>()).complete(config);
