@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 @immutable
 class AppTypography extends ThemeExtension<AppTypography> {
   const AppTypography({
+    required this.title2,
     required this.title3,
     required this.title4,
     required this.title6,
@@ -14,6 +15,11 @@ class AppTypography extends ThemeExtension<AppTypography> {
     required this.body4,
     required this.number1,
   });
+
+  /// Figma `title2`(SemiBold 28, 자간 0). 초대코드 화면의 제목
+  /// (`289:3264`)이 이 토큰을 쓴다 — 그전까지 쓰는 화면이 없어 토큰만
+  /// 빠져 있었다(#61).
+  final TextStyle title2;
 
   final TextStyle title3;
   final TextStyle title4;
@@ -34,6 +40,12 @@ class AppTypography extends ThemeExtension<AppTypography> {
   static const String _manrope = 'Manrope';
 
   static const AppTypography standard = AppTypography(
+    title2: TextStyle(
+      fontFamily: _pretendard,
+      fontSize: 28,
+      fontWeight: FontWeight.w600,
+      height: 1,
+    ),
     title3: TextStyle(
       fontFamily: _pretendard,
       fontSize: 24,
@@ -96,6 +108,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
 
   @override
   AppTypography copyWith({
+    TextStyle? title2,
     TextStyle? title3,
     TextStyle? title4,
     TextStyle? title6,
@@ -107,6 +120,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
     TextStyle? number1,
   }) {
     return AppTypography(
+      title2: title2 ?? this.title2,
       title3: title3 ?? this.title3,
       title4: title4 ?? this.title4,
       title6: title6 ?? this.title6,
@@ -123,6 +137,7 @@ class AppTypography extends ThemeExtension<AppTypography> {
   AppTypography lerp(ThemeExtension<AppTypography>? other, double t) {
     if (other is! AppTypography) return this;
     return AppTypography(
+      title2: TextStyle.lerp(title2, other.title2, t)!,
       title3: TextStyle.lerp(title3, other.title3, t)!,
       title4: TextStyle.lerp(title4, other.title4, t)!,
       title6: TextStyle.lerp(title6, other.title6, t)!,

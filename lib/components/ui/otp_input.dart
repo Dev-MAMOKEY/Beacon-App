@@ -30,14 +30,53 @@ class AppOtpInput extends StatefulWidget {
     super.key,
     required this.length,
     required this.onCompleted,
+    this.onChanged,
     this.controller,
     this.enabled = true,
+    this.cellWidth = 56,
+    this.cellHeight = 64,
+    this.gap = 16,
+    this.cellRadius = 12,
+    this.stretchCells = false,
+    this.fillColor,
+    this.keyboardType = TextInputType.number,
+    this.inputFormatters,
+    this.semanticsLabel = '인증번호',
   }) : assert(length > 0, 'length는 1 이상이어야 한다');
 
   final int length;
   final ValueChanged<String> onCompleted;
+
+  /// 한 글자가 바뀔 때마다 **지금까지 입력된 전체 문자열**을 준다. 완료
+  /// 여부와 무관하게 불리므로, 제출 버튼의 활성 조건처럼 부분 입력을
+  /// 알아야 하는 화면이 쓴다.
+  final ValueChanged<String>? onChanged;
   final AppOtpController? controller;
   final bool enabled;
+
+  /// 칸 모양. 기본값은 출석 코드 팝업의 Figma 실측(`339:1683` — 56×64,
+  /// 간격 16, 반경 12)이고, 초대코드 화면은 자기 실측(`289:3271` — 43×43,
+  /// 간격 12, 반경 14)을 넘겨 쓴다. 두 화면이 같은 위젯을 쓰면서 각자의
+  /// 실측을 지키게 하려고 매개변수로 뺐다(#61).
+  final double cellWidth;
+  final double cellHeight;
+  final double gap;
+  final double cellRadius;
+
+  /// 칸 배경. null이면 `AppColors.gray4`(출석 코드 실측).
+  final Color? fillColor;
+
+  /// 참이면 칸이 남는 가로폭을 균등 분할하고 **정사각**이 된다
+  /// ([cellWidth]/[cellHeight]는 무시된다). Figma 초대코드(`289:3271`)가
+  /// 6칸을 342 폭에 균등 분할하는 그리드라 이 모드가 필요하다.
+  final bool stretchCells;
+
+  /// 초대코드는 영문·숫자를 함께 받으므로 숫자 전용이 아니다.
+  final TextInputType keyboardType;
+  final List<TextInputFormatter>? inputFormatters;
+
+  /// 스크린 리더가 읽을 이름. 초대코드 화면에서는 "인증번호"가 아니다.
+  final String semanticsLabel;
 
   @override
   State<AppOtpInput> createState() => _AppOtpInputState();
@@ -140,10 +179,19 @@ class _AppOtpInputState extends State<AppOtpInput>
 
   String get _value => _controllers.map((c) => c.text).join();
 
+  /// 고정 크기 칸 또는 균등 분할 정사각 칸.
+  Widget _cell({required int index, required Widget child}) {
+    if (widget.stretchCells) {
+      return Expanded(child: AspectRatio(aspectRatio: 1, child: child));
+    }
+    return SizedBox(width: widget.cellWidth, height: widget.cellHeight, child: child);
+  }
+
   void _onDigitChanged(int index, String value) {
     if (value.isNotEmpty && index < widget.length - 1) {
       _focusNodes[index + 1].requestFocus();
     }
+    widget.onChanged?.call(_value);
     if (_value.length == widget.length) {
       widget.onCompleted(_value);
     }
@@ -183,19 +231,18 @@ class _AppOtpInputState extends State<AppOtpInput>
             // Figma(339:1683)는 칸 사이 간격만 16이고 바깥쪽엔 여백이 없다
             // — 칸마다 좌우 패딩을 주면 바깥쪽에도 여백이 생겨 버리므로
             // 칸과 칸 사이에만 구분자를 끼워 넣는다.
-            if (index > 0) const SizedBox(width: 16),
-            SizedBox(
-              width: 56,
-              height: 64,
+            if (index > 0) SizedBox(width: widget.gap),
+            _cell(
+              index: index,
               child: Semantics(
-                label: '인증번호 ${index + 1} / ${widget.length}',
+                label: '${widget.semanticsLabel} ${index + 1} / ${widget.length}',
                 child: TextField(
                   controller: _controllers[index],
                   focusNode: _focusNodes[index],
                   enabled: widget.enabled,
                   autofocus: index == 0,
                   textAlign: TextAlign.center,
-                  keyboardType: TextInputType.number,
+                  keyboardType: widget.keyboardType,
                   maxLength: 1,
                   // Figma는 이 자리 숫자를 Inter Bold로 그렸지만 Inter는
                   // AppTypography 토큰에도, 번들 폰트에도 없다 — 새 폰트를
@@ -203,27 +250,28 @@ class _AppOtpInputState extends State<AppOtpInput>
                   // 가장 가까운 기존 토큰(title3, Pretendard SemiBold
                   // 24px)으로 대체했다. 리포트에 플래그.
                   style: typography.title3.copyWith(color: colors.gray3),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  inputFormatters:
+                      widget.inputFormatters ?? [FilteringTextInputFormatter.digitsOnly],
                   decoration: InputDecoration(
                     counterText: '',
                     filled: true,
                     // Figma는 칸을 gray4로 채우고 테두리가 없다(흰 배경 +
                     // 테두리였던 이전 구현과 다르다).
-                    fillColor: colors.gray4,
+                    fillColor: widget.fillColor ?? colors.gray4,
                     // 빈 칸에 가운뎃점(·) 플레이스홀더를 보여준다(Figma
                     // 실측) — 값이 있으면 Flutter가 자동으로 숨긴다.
                     hintText: '·',
                     hintStyle: typography.title3.copyWith(color: colors.gray2),
                     contentPadding: EdgeInsets.zero,
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(widget.cellRadius),
                       borderSide: BorderSide.none,
                     ),
                     // 정적 목업엔 포커스 상태가 없으므로 Figma가 보여주지
                     // 않지만, 키보드 사용자를 위한 최소한의 포커스
                     // 표시로 유지한다.
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(widget.cellRadius),
                       borderSide: BorderSide(color: colors.main, width: 2),
                     ),
                   ),
