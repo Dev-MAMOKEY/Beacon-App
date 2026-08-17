@@ -19,16 +19,22 @@ import '../data/beacon_psk_store.dart';
 /// - 한 번 저장하면 다시 묻지 않으며,
 /// - 잘못 넣었을 때 **바로 그 화면에서** 고칠 수 있다.
 ///
-/// 약점 하나를 인정한다: 이 방식만으로는 저장된 PSK를 나중에 바꿀 경로가
-/// 없다. 비콘 기기를 교체하면 저장값이 틀리게 되므로, 시작이 실패했을 때
-/// 다시 물을 수 있도록 [initial]을 받는다.
+/// 비콘 기기를 교체하면 저장값이 틀리게 되므로 시작이 실패했을 때 다시
+/// 물을 수 있도록 [initial]을 받고, 설정 화면(#18)에서 세션과 무관하게
+/// 바꿀 수 있도록 [submitLabel]을 받는다.
 class BeaconPskPopupContent extends StatefulWidget {
   const BeaconPskPopupContent({
     super.key,
     required this.onSubmit,
     required this.onCancel,
     this.initial,
+    this.submitLabel = '저장하고 시작',
   });
+
+  /// 확인 버튼 문구. 세션 시작 흐름에서는 저장 직후 세션이 시작되지만,
+  /// 설정 화면에서는 저장만 한다 — 같은 문구를 쓰면 시작되지도 않을
+  /// 세션이 시작된다고 말하는 셈이다.
+  final String submitLabel;
 
   /// 저장된 값이 있으면 채워 둔다 — 한 글자만 틀렸을 때 전부 다시 치게
   /// 하지 않는다.
@@ -105,7 +111,11 @@ class _BeaconPskPopupContentState extends State<BeaconPskPopupContent> {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: AppButton(label: '저장하고 시작', size: ButtonSize.md, onPressed: _submit),
+              child: AppButton(
+                label: widget.submitLabel,
+                size: ButtonSize.md,
+                onPressed: _submit,
+              ),
             ),
           ],
         ),

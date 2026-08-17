@@ -13,6 +13,9 @@ import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../auth/presentation/session_controller.dart';
+import '../../beacon/data/beacon_config_dto.dart';
+import '../../beacon/data/beacon_config_repository.dart';
+import '../../club/data/club_settings_repository.dart';
 import '../data/attendance_admin_dto.dart';
 import '../data/beacon_psk_store.dart';
 import '../data/club_member_repository.dart';
@@ -23,6 +26,7 @@ import 'admin_session_card.dart';
 import 'attendance_status_popup.dart';
 import 'attendance_status_sheet.dart';
 import 'beacon_psk_popup.dart';
+import 'club_settings_sheet.dart';
 import 'manual_attendance_popup.dart';
 import 'member_actions_popup.dart';
 import 'members_sheet.dart';
@@ -95,6 +99,9 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     _searchDebounce?.cancel();
     _memberSearch.dispose();
     _membersState.dispose();
+    _clubName.dispose();
+    _clubDescription.dispose();
+    _settingsState.dispose();
     _attendanceState.dispose();
     _owned.closeAll();
     super.dispose();
@@ -209,6 +216,41 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 
   /// 검색 입력마다 요청을 보내지 않기 위한 디바운스.
   Timer? _searchDebounce;
+
+  /// 설정 시트의 상태. 시트는 별도 라우트 서브트리라 `setState`로는 다시
+  /// 그려지지 않는다 — 멤버 시트와 같은 이유로 notifier를 쓴다.
+  final ValueNotifier<
+    ({
+      String? inviteCode,
+      BeaconConfig? beacon,
+      bool hasPsk,
+      bool loading,
+      bool failed,
+      bool savingClub,
+      bool savingBeacon,
+      bool workingInvite,
+    })
+  >
+  _settingsState = ValueNotifier((
+    inviteCode: null,
+    beacon: null,
+    hasPsk: false,
+    loading: true,
+    failed: false,
+    savingClub: false,
+    savingBeacon: false,
+    workingInvite: false,
+  ));
+
+  /// 설정 조회·저장의 세대. 시트를 열 때마다 올라간다.
+  ///
+  /// 세션 목록(`_generation`)·출석 시트(`_attendanceSession`)와 같은 이유다 —
+  /// `mounted`만 보면 **시트를 닫았다 다시 연 뒤** 뒤늦게 도착한 응답이
+  /// 방금 입력한 값을 조용히 덮어쓴다.
+  int _settingsGeneration = 0;
+
+  final TextEditingController _clubName = TextEditingController();
+  final TextEditingController _clubDescription = TextEditingController();
 
   /// 내 `memberId`. 역할 변경 요청의 `requesterId`이고, 자기 자신을 강등·
   /// 제외하지 못하게 막는 기준이다. `GET /members/me`에 `memberId`가 없어
@@ -540,6 +582,278 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     );
   }
 
+
+  // ---- 설정 -------------------------------------------------------------
+
+  void _openSettings(int clubId) {
+    final generation = ++_settingsGeneration;
+    _settingsState.value = (
+      inviteCode: null,
+      beacon: null,
+      hasPsk: false,
+      loading: true,
+      failed: false,
+      savingClub: false,
+      savingBeacon: false,
+      workingInvite: false,
+    );
+
+    _owned.push(
+      buildAppSheetRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => ListenableBuilder(
+          listenable: _settingsState,
+          builder: (context, _) {
+            final state = _settingsState.value;
+            return ClubSettingsSheetContent(
+              clubName: _clubName,
+              clubDescription: _clubDescription,
+              inviteCode: state.inviteCode,
+              beacon: state.beacon,
+              hasPsk: state.hasPsk,
+              isLoading: state.loading,
+              loadFailed: state.failed,
+              savingClub: state.savingClub,
+              savingBeacon: state.savingBeacon,
+              workingInviteCode: state.workingInvite,
+              onSaveClub: () => unawaited(_saveClub(clubId)),
+              onIssueInviteCode: () => unawaited(_issueInviteCode(clubId)),
+              onRevokeInviteCode: () => unawaited(_revokeInviteCode(clubId)),
+              onSaveBeacon: (config) => unawaited(_saveBeacon(clubId, config)),
+              onEditPsk: _openPskEditor,
+            );
+          },
+        ),
+      ),
+    );
+    unawaited(_loadSettings(clubId, generation));
+  }
+
+  /// 동아리·초대코드·비콘·PSK를 한 번에 읽는다.
+  ///
+  /// 초대코드만 실패해도 화면 전체를 못 쓰게 만들지는 않는다 — 코드가 없는
+  /// 것과 못 읽은 것은 리포지토리가 이미 구분해 준다. 반대로 동아리 정보나
+  /// 비콘 설정을 못 읽으면 편집할 대상이 없으므로 실패로 다룬다.
+  Future<void> _loadSettings(int clubId, int generation) async {
+    try {
+      final results = await Future.wait([
+        ref.read(clubSettingsRepositoryProvider).fetchClub(clubId),
+        ref.read(beaconConfigRepositoryProvider).fetch(clubId),
+      ]);
+      if (!_isCurrentSettings(generation)) return;
+
+      final club = results[0] as ClubDetail;
+      final beacon = results[1] as BeaconConfig;
+      _clubName.text = club.clubName;
+      _clubDescription.text = club.clubDescription ?? '';
+
+      final code = await _readInviteCode(clubId);
+      final hasPsk = await _readHasPsk();
+      if (!_isCurrentSettings(generation)) return;
+
+      _settingsState.value = (
+        inviteCode: code,
+        beacon: beacon,
+        hasPsk: hasPsk,
+        loading: false,
+        failed: false,
+        savingClub: false,
+        savingBeacon: false,
+        workingInvite: false,
+      );
+    } catch (_) {
+      if (!_isCurrentSettings(generation)) return;
+      _settingsState.value = (
+        inviteCode: null,
+        beacon: null,
+        hasPsk: false,
+        loading: false,
+        failed: true,
+        savingClub: false,
+        savingBeacon: false,
+        workingInvite: false,
+      );
+    }
+  }
+
+  /// 이 화면이 보일 때만 토스트를 띄운다.
+  ///
+  /// `showAppToast(context, ...)`를 await 뒤에서 직접 부르면 분석기가
+  /// `_isCurrentSettings` 안의 `mounted` 검사를 꿰뚫어 보지 못해
+  /// `use_build_context_synchronously`로 경고한다. 검사와 사용을 한 곳에
+  /// 붙여 두면 그 경고가 정당하게 사라진다.
+  void _settingsToast(String message) {
+    if (!mounted || !_visible) return;
+    showAppToast(context, message);
+  }
+
+  /// 이 응답이 아직 최신인지. 시트를 닫았다 다시 열면 세대가 올라가므로,
+  /// 그 전에 띄운 요청의 결과는 여기서 버려진다.
+  bool _isCurrentSettings(int generation) =>
+      mounted && generation == _settingsGeneration;
+
+  /// 초대코드를 못 읽는 것은 설정 화면 전체를 막을 이유가 아니다.
+  Future<String?> _readInviteCode(int clubId) async {
+    try {
+      return await ref.read(clubSettingsRepositoryProvider).fetchInviteCode(clubId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _readHasPsk() async {
+    try {
+      final psk = await ref.read(beaconPskStoreProvider).read();
+      return psk != null && isValidBeaconPsk(psk);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _saveClub(int clubId) async {
+    final generation = _settingsGeneration;
+    final name = _clubName.text.trim();
+    if (name.isEmpty) {
+      _settingsToast('동아리명을 입력해주세요.');
+      return;
+    }
+    if (_settingsState.value.savingClub) return;
+    _settingsState.value = (
+      inviteCode: _settingsState.value.inviteCode,
+      beacon: _settingsState.value.beacon,
+      hasPsk: _settingsState.value.hasPsk,
+      loading: false,
+      failed: false,
+      savingClub: true,
+      savingBeacon: _settingsState.value.savingBeacon,
+      workingInvite: _settingsState.value.workingInvite,
+    );
+
+    try {
+      await ref.read(clubSettingsRepositoryProvider).updateClub(
+        clubId: clubId,
+        clubName: name,
+        clubDescription: _clubDescription.text.trim(),
+      );
+      // 응답이 수정된 동아리가 아니라 문자열이라, 무엇이 저장됐는지는
+      // 다시 읽어야만 알 수 있다.
+      final club = await ref.read(clubSettingsRepositoryProvider).fetchClub(clubId);
+      if (!_isCurrentSettings(generation)) return;
+      _clubName.text = club.clubName;
+      _clubDescription.text = club.clubDescription ?? '';
+      _setSettings(savingClub: false);
+      _settingsToast('동아리 정보를 저장했습니다.');
+    } catch (_) {
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(savingClub: false);
+      _settingsToast('동아리 정보를 저장하지 못했습니다.');
+    }
+  }
+
+  Future<void> _issueInviteCode(int clubId) async {
+    final generation = _settingsGeneration;
+    if (_settingsState.value.workingInvite) return;
+    _setSettings(workingInvite: true);
+    try {
+      final code = await ref.read(clubSettingsRepositoryProvider).issueInviteCode(clubId);
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(workingInvite: false, inviteCode: code, hasInviteCode: true);
+    } catch (_) {
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(workingInvite: false);
+      _settingsToast('초대코드를 발급하지 못했습니다.');
+    }
+  }
+
+  Future<void> _revokeInviteCode(int clubId) async {
+    final generation = _settingsGeneration;
+    if (_settingsState.value.workingInvite) return;
+    _setSettings(workingInvite: true);
+    try {
+      await ref.read(clubSettingsRepositoryProvider).revokeInviteCode(clubId);
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(workingInvite: false, inviteCode: null, hasInviteCode: true);
+    } catch (_) {
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(workingInvite: false);
+      _settingsToast('초대코드를 무효화하지 못했습니다.');
+    }
+  }
+
+  Future<void> _saveBeacon(int clubId, BeaconConfig config) async {
+    final generation = _settingsGeneration;
+    if (_settingsState.value.savingBeacon) return;
+    _setSettings(savingBeacon: true);
+    try {
+      final saved = await ref.read(beaconConfigRepositoryProvider).update(clubId, config);
+      if (!_isCurrentSettings(generation)) return;
+      // 서버가 다듬은 값이 있으면 그게 화면에 반영돼야 한다.
+      _setSettings(savingBeacon: false, beacon: saved, hasBeacon: true);
+      _settingsToast('비콘 설정을 저장했습니다.');
+    } catch (_) {
+      if (!_isCurrentSettings(generation)) return;
+      _setSettings(savingBeacon: false);
+      _settingsToast('비콘 설정을 저장하지 못했습니다.');
+    }
+  }
+
+  /// 설정 상태를 부분 갱신한다.
+  ///
+  /// `inviteCode`/`beacon`은 **null 자체가 의미 있는 값**이라(코드 없음,
+  /// 아직 못 읽음) `??`로는 "안 바꿈"과 구별할 수 없다. 바꿀 때만 짝이 되는
+  /// `hasInviteCode`/`hasBeacon`을 함께 켠다.
+  void _setSettings({
+    bool? savingClub,
+    bool? savingBeacon,
+    bool? workingInvite,
+    bool hasInviteCode = false,
+    String? inviteCode,
+    bool hasBeacon = false,
+    BeaconConfig? beacon,
+    bool? hasPsk,
+  }) {
+    final now = _settingsState.value;
+    _settingsState.value = (
+      inviteCode: hasInviteCode ? inviteCode : now.inviteCode,
+      beacon: hasBeacon ? beacon : now.beacon,
+      hasPsk: hasPsk ?? now.hasPsk,
+      loading: now.loading,
+      failed: now.failed,
+      savingClub: savingClub ?? now.savingClub,
+      savingBeacon: savingBeacon ?? now.savingBeacon,
+      workingInvite: workingInvite ?? now.workingInvite,
+    );
+  }
+
+  /// 설정에서 PSK를 다시 입력받는다. 세션 시작 흐름([_ensurePsk])과 달리
+  /// 저장만 하고 아무것도 시작하지 않는다.
+  void _openPskEditor() {
+    final store = ref.read(beaconPskStoreProvider);
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => BeaconPskPopupContent(
+          submitLabel: '저장',
+          onCancel: _owned.closeTop,
+          onSubmit: (psk) async {
+            _owned.closeTop();
+            try {
+              await store.save(psk);
+            } catch (_) {
+              _settingsToast('PSK를 저장하지 못했습니다.');
+              return;
+            }
+            if (!mounted) return;
+            _setSettings(hasPsk: true);
+            _settingsToast('PSK를 저장했습니다.');
+          },
+        ),
+      ),
+    );
+  }
+
   Future<void> _ensurePsk(int clubId, AdminSession session) async {
     final store = ref.read(beaconPskStoreProvider);
     String? existing;
@@ -708,7 +1022,10 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         child: Column(
           children: [
             const SizedBox(height: 62 - 47),
-            _AdminTopBar(onMembers: clubId == null ? null : () => _openMembers(clubId)),
+            _AdminTopBar(
+              onMembers: clubId == null ? null : () => _openMembers(clubId),
+              onSettings: clubId == null ? null : () => _openSettings(clubId),
+            ),
             const SizedBox(height: 24),
             Expanded(
               child: sessions == null
@@ -764,12 +1081,16 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
 }
 
 class _AdminTopBar extends StatelessWidget {
-  const _AdminTopBar({this.onMembers});
+  const _AdminTopBar({this.onMembers, this.onSettings});
 
   /// 멤버 관리 진입점. Figma 모바일 관리자 화면(`353:2033`)에는 이 자리에
   /// 알림 벨만 있고 멤버 관리로 가는 길이 없다 — 웹에만 있는 화면이라
   /// 모바일 진입점을 새로 만들어야 했다(#17).
   final VoidCallback? onMembers;
+
+  /// 설정 진입점. 멤버 관리와 같은 사정이다 — 웹에만 있는 화면이라
+  /// (`356:2127`) 모바일 진입점을 새로 만들어야 했다(#18).
+  final VoidCallback? onSettings;
 
   /// 세션을 시작하고 출석 코드를 받아 둔다.
   ///
@@ -794,13 +1115,27 @@ class _AdminTopBar extends StatelessWidget {
             // 가장 가까운 title4로 두고 리포트에 남긴다.
             style: typography.title4.copyWith(color: colors.gray3),
           ),
-          GestureDetector(
-            onTap: onMembers,
-            behavior: HitTestBehavior.opaque,
-            child: Text(
-              '멤버',
-              style: typography.body2.copyWith(color: colors.gray3),
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              GestureDetector(
+                onTap: onMembers,
+                behavior: HitTestBehavior.opaque,
+                child: Text(
+                  '멤버',
+                  style: typography.body2.copyWith(color: colors.gray3),
+                ),
+              ),
+              const SizedBox(width: 14),
+              GestureDetector(
+                onTap: onSettings,
+                behavior: HitTestBehavior.opaque,
+                child: Text(
+                  '설정',
+                  style: typography.body2.copyWith(color: colors.gray3),
+                ),
+              ),
+            ],
           ),
         ],
       ),

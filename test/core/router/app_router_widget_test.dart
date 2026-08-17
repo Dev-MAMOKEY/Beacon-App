@@ -47,6 +47,12 @@ class _NoopBeaconConfigRepository implements BeaconConfigRepository {
     rssiStabilizationSeconds: 3,
     rssiThreshold: -70,
   );
+
+  /// 이 더블은 조회만 쓴다 — 부르면 테스트가 잘못 짜인 것이므로 조용히
+  /// 성공하지 않고 바로 터뜨린다.
+  @override
+  Future<BeaconConfig> update(int clubId, BeaconConfig config) =>
+      throw UnimplementedError();
 }
 
 class _NoopAttendanceRepository implements AttendanceRepository {

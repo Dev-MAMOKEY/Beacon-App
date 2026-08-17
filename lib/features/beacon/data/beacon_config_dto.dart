@@ -8,7 +8,7 @@ part 'beacon_config_dto.g.dart';
 
 /// `GET /clubs/{id}/beacon` 응답. 클럽마다 다른 비콘 UUID와 판정 파라미터를
 /// 담는다 — [BeaconScanConfig]는 이 값으로 채워진다.
-@JsonSerializable(createToJson: false)
+@JsonSerializable()
 class BeaconConfig {
   const BeaconConfig({
     required this.uuid,
@@ -47,6 +47,24 @@ class BeaconConfig {
   final int lateThresholdMinutes;
   final int rssiStabilizationSeconds;
   final int rssiThreshold;
+
+  Map<String, dynamic> toJson() => _$BeaconConfigToJson(this);
+
+  /// 일부만 바꿔 보낼 수 없다 — `PUT /clubs/{id}/beacon`은 네 필드가 전부
+  /// required인 **전체 교체**다. 현재 값을 읽어 이걸로 갈아끼운 뒤 통째로
+  /// 보내야 한다. uuid만 담아 보내면 지각 기준·안정화 시간·임계값이 함께
+  /// 사라진다.
+  BeaconConfig copyWith({
+    String? uuid,
+    int? lateThresholdMinutes,
+    int? rssiStabilizationSeconds,
+    int? rssiThreshold,
+  }) => BeaconConfig(
+    uuid: uuid ?? this.uuid,
+    lateThresholdMinutes: lateThresholdMinutes ?? this.lateThresholdMinutes,
+    rssiStabilizationSeconds: rssiStabilizationSeconds ?? this.rssiStabilizationSeconds,
+    rssiThreshold: rssiThreshold ?? this.rssiThreshold,
+  );
 }
 
 /// [BeaconConfig](서버 응답)를 [BeaconScanConfig](스캐너 입력)로 바꾸는
