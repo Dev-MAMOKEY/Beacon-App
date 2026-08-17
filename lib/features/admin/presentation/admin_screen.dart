@@ -274,7 +274,16 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
           .fetchMembers(clubId, search: search);
       if (!mounted) return;
       _myMemberId ??= _findMyMemberId(members);
-      _membersState.value = (members: members, loading: false, failed: false);
+      // 리포지토리가 준 목록을 그대로 넣지 않고 복사한다. [ValueNotifier]는
+      // 값이 **같으면** 알리지 않는데, 레코드 비교는 리스트를 참조로 본다 —
+      // 같은 인스턴스를 돌려주는 구현을 만나면 다시 읽어도 화면이 그대로다.
+      // 복사본은 매번 다른 인스턴스라 반드시 다시 그려지고, 덤으로 바깥에서
+      // 목록을 건드려도 화면 상태가 흔들리지 않는다.
+      _membersState.value = (
+        members: List<ClubMember>.unmodifiable(members),
+        loading: false,
+        failed: false,
+      );
     } catch (_) {
       if (!mounted) return;
       _membersState.value = (members: const [], loading: false, failed: true);
@@ -304,7 +313,9 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
           // 관리자가 스스로를 강등하거나 제외하면 그 동아리에 관리자가
           // 없어질 수 있고, 되돌릴 방법이 앱 안에 없다.
           isSelf: _myMemberId != null && member.memberId == _myMemberId,
-          onCancel: _owned.closeAll,
+          // `closeAll`이 아니다 — 시트와 팝업은 같은 소유 목록에 들어 있어서
+          // 팝업만 닫으려던 호출이 그 밑의 시트까지 닫는다.
+          onCancel: _owned.closeTop,
           onToggleRole: () => unawaited(_toggleRole(clubId, member)),
           onRemove: () => _confirmRemoveMember(clubId, member),
         ),
@@ -312,9 +323,23 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     );
   }
 
+  /// 열려 있는 시트를 그대로 두고 목록만 다시 읽는다.
+  ///
+  /// 시트를 닫았다 다시 여는 방식(`closeAll` + `_openMembers`)을 쓰지 않는
+  /// 이유: 시트가 [ListenableBuilder]로 [_membersState]를 보고 있어 값만
+  /// 갈아 끼우면 알아서 다시 그려진다. 닫았다 열면 화면이 한 번 깜빡이고,
+  /// 무엇보다 실패했을 때 돌아갈 자리가 사라진다.
+  ///
+  /// 검색어를 함께 넘긴다 — 안 넘기면 입력칸에는 검색어가 남은 채 목록만
+  /// 전체로 돌아가 둘이 어긋난다.
+  Future<void> _refreshMembers(int clubId) =>
+      _loadMembers(clubId, search: _memberSearch.text);
+
   Future<void> _toggleRole(int clubId, ClubMember member) async {
     final requesterId = _myMemberId;
-    _owned.closeAll();
+    // 팝업만 닫는다. 실패하면 관리자는 시트에서 곧바로 다시 시도할 수 있어야
+    // 한다 — 시트까지 닫으면 토스트만 뜨고 목록을 처음부터 다시 연다.
+    _owned.closeTop();
     if (requesterId == null) {
       if (mounted && _visible) showAppToast(context, '내 정보를 확인하지 못했습니다.');
       return;
@@ -327,7 +352,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         newRole: member.role == ClubRole.admin ? ClubRole.member : ClubRole.admin,
       );
       if (!mounted) return;
-      _openMembers(clubId);
+      await _refreshMembers(clubId);
     } catch (_) {
       if (!mounted || !_visible) return;
       showAppToast(context, '역할을 바꾸지 못했습니다.');
@@ -335,22 +360,32 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
   }
 
   void _confirmRemoveMember(int clubId, ClubMember member) {
-    _owned.closeAll();
+    // 액션 팝업만 걷어내고 확인 팝업을 시트 위에 얹는다.
+    _owned.closeTop();
+
+    // `isSelf`는 `_myMemberId`가 아직 null이면 무조건 false가 되어 자기 행에도
+    // 제외 버튼이 그대로 보인다. 누가 나인지 모르는 채로 되돌릴 수 없는 삭제를
+    // 보내지 않는다 — [_toggleRole]이 `requesterId == null`에서 하는 것과 같다.
+    if (_myMemberId == null) {
+      if (mounted && _visible) showAppToast(context, '내 정보를 확인하지 못했습니다.');
+      return;
+    }
+
     _owned.push(
       buildAppPopupRoute<void>(
         context: context,
         navigator: _rootNavigator,
         builder: (_) => MemberRemoveConfirmContent(
           member: member,
-          onCancel: _owned.closeAll,
+          onCancel: _owned.closeTop,
           onConfirm: () async {
-            _owned.closeAll();
+            _owned.closeTop();
             try {
               await ref
                   .read(clubMemberRepositoryProvider)
                   .removeMember(clubId: clubId, memberId: member.memberId);
               if (!mounted) return;
-              _openMembers(clubId);
+              await _refreshMembers(clubId);
             } catch (_) {
               if (!mounted || !_visible) return;
               showAppToast(context, '멤버를 제외하지 못했습니다.');
@@ -482,7 +517,10 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
         navigator: _rootNavigator,
         builder: (_) => AttendanceStatusPopupContent(
           record: record,
-          onCancel: () => _owned.remove(_owned.take().last),
+          // `remove(take().last)`가 아니다 — `take()`가 추적을 통째로 비워서
+          // 밑의 출석 시트가 주인 없는 라우트가 되고, 탭을 떠날 때 아무도
+          // 그걸 닫지 않아 다음 화면 위에 남는다(#41과 같은 결함).
+          onCancel: _owned.closeTop,
           onSubmit: (status, note) async {
             await ref.read(sessionRepositoryProvider).updateAttendanceStatus(
               clubId: clubId,
