@@ -71,6 +71,33 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   /// 모아 두었다가 순서대로 하나씩 보낸다.
   bool? _desiredPushEnabled;
 
+  /// `PATCH /members/me`를 쓰는 **모든** 동작이 지나는 단일 직렬화 지점.
+  ///
+  /// 토글 쓰기는 원래 다른 토글 쓰기에 대해서만 직렬화됐다. 이름 변경은
+  /// 팝업이 리포지토리를 직접 불러 이 경로를 통째로 우회했는데, 두 동작 모두
+  /// 같은 엔드포인트를 쓰고 **토글 요청은 `name`을 필수로 함께 보낸다.**
+  /// 그래서 이름이 A일 때 토글을 누르고 곧바로 이름 B를 제출하면, 이름
+  /// 요청이 먼저 적용되고 앞선 토글 요청이 나중에 도착해 **서버는 A로
+  /// 끝나는데 화면은 B를 보여줬다**(리뷰 Important 1).
+  ///
+  /// "보내는 시점에 이름을 읽는다"로는 못 막는다 — **이미 나간 요청**은
+  /// 되돌릴 수 없다. 두 동작이 같은 줄에 서야 한다.
+  Future<void> _writeQueue = Future<void>.value();
+
+  /// [action]을 앞선 프로필 쓰기가 끝난 뒤에 실행한다.
+  Future<void> _serializeWrite(Future<void> Function() action) {
+    final completer = Completer<void>();
+    _writeQueue = _writeQueue.then((_) async {
+      try {
+        await action();
+        completer.complete();
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
+  }
+
   /// 알림 토글 요청이 떠 있는지. **쓰기를 직렬화하는 것이 핵심이다** —
   /// 세대 검사는 늦게 도착한 *응답*만 버릴 뿐 서버 도착 순서를 정하지
   /// 못한다. 켜기·끄기를 연달아 보내면 뒤에 보낸 요청이 서버에 먼저 닿아
@@ -156,7 +183,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   void _detachPopup() {
     final route = _takePopup();
     if (route == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _removePopupRoute(route));
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _removePopupRoute(route),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -177,7 +206,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
 
     _desiredPushEnabled = next;
-    ref.read(sessionControllerProvider.notifier).applyProfileChange(pushEnabled: next);
+    ref
+        .read(sessionControllerProvider.notifier)
+        .applyProfileChange(pushEnabled: next);
     unawaited(_drainPushQueue());
   }
 
@@ -198,10 +229,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           // 아니라 **보내는 시점**의 세션에서 읽는다 — 토글이 떠 있는 동안
           // 이름이 바뀌면, 붙잡아 둔 옛 이름이 서버의 이름을 되돌린다
           // (리뷰 Important 3).
-          await ref.read(profileRepositoryProvider).updateProfile(
-                name: _currentName() ?? '',
-                pushEnabled: target,
-              );
+          await _serializeWrite(
+            () => ref
+                .read(profileRepositoryProvider)
+                .updateProfile(name: _currentName() ?? '', pushEnabled: target),
+          );
         } catch (error) {
           // `ApiException`만 잡으면 그 밖의 예외가 새어 낙관적 값이 적용된
           // 채로 남고 처리되지 않은 비동기 오류가 된다 — 홈 화면이 이미
@@ -250,12 +282,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   void _openNameChangePopup(MemberProfile profile) {
     _openPopup(
       (context) => _NameChangePopupContent(
+        submit: (name) => _serializeWrite(
+          () => ref.read(profileRepositoryProvider).updateProfile(name: name),
+        ),
         initialName: profile.name,
         onCancel: _closePopup,
         onChanged: (name) {
           _closePopup();
           if (!mounted) return;
-          ref.read(sessionControllerProvider.notifier).applyProfileChange(name: name);
+          ref
+              .read(sessionControllerProvider.notifier)
+              .applyProfileChange(name: name);
         },
       ),
     );
@@ -361,7 +398,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           'assets/icons/arrow-right-s-line.svg',
                           width: 28,
                           height: 28,
-                          colorFilter: ColorFilter.mode(colors.gray1, BlendMode.srcIn),
+                          colorFilter: ColorFilter.mode(
+                            colors.gray1,
+                            BlendMode.srcIn,
+                          ),
                         ),
                       ),
                     ),
@@ -378,7 +418,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           'assets/icons/chevron-right.svg',
                           width: 7.78,
                           height: 12.73,
-                          colorFilter: ColorFilter.mode(colors.bg, BlendMode.srcIn),
+                          colorFilter: ColorFilter.mode(
+                            colors.bg,
+                            BlendMode.srcIn,
+                          ),
                         ),
                       ),
                     ),
@@ -526,7 +569,10 @@ class _MenuCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(title, style: typography.title6.copyWith(color: colors.gray3)),
+                      Text(
+                        title,
+                        style: typography.title6.copyWith(color: colors.gray3),
+                      ),
                       const SizedBox(height: 6),
                       Text(
                         subtitle,
@@ -565,6 +611,7 @@ class _MenuCard extends StatelessWidget {
 /// 닫기만 호출자(`ProfileScreen`)에게 맡긴다.
 class _NameChangePopupContent extends ConsumerStatefulWidget {
   const _NameChangePopupContent({
+    required this.submit,
     required this.initialName,
     required this.onCancel,
     required this.onChanged,
@@ -572,14 +619,23 @@ class _NameChangePopupContent extends ConsumerStatefulWidget {
 
   final String initialName;
   final VoidCallback onCancel;
+
+  /// 실제 쓰기. 화면이 소유한 직렬화 큐를 지나므로 팝업이 리포지토리를
+  /// 직접 부르지 않는다 — 그래야 토글과 같은 줄에 선다.
+  final Future<void> Function(String name) submit;
+
   final ValueChanged<String> onChanged;
 
   @override
-  ConsumerState<_NameChangePopupContent> createState() => _NameChangePopupContentState();
+  ConsumerState<_NameChangePopupContent> createState() =>
+      _NameChangePopupContentState();
 }
 
-class _NameChangePopupContentState extends ConsumerState<_NameChangePopupContent> {
-  late final TextEditingController _name = TextEditingController(text: widget.initialName);
+class _NameChangePopupContentState
+    extends ConsumerState<_NameChangePopupContent> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.initialName,
+  );
 
   String? _error;
   bool _submitting = false;
@@ -604,12 +660,16 @@ class _NameChangePopupContentState extends ConsumerState<_NameChangePopupContent
     try {
       // 토글을 함께 보내지 않는다 — `pushEnabled`가 빠지면 서버는 그 값을
       // 건드리지 않는다.
-      await ref.read(profileRepositoryProvider).updateProfile(name: name);
-    } on ApiException catch (apiError) {
+      await widget.submit(name);
+    } catch (error) {
+      // `ApiException`만 잡으면 그 밖의 예외(파싱 실패 등)가 새어 `_submitting`
+      // 이 참으로 굳는다. 이 팝업은 `barrierDismissible: false`라 확인은
+      // 로딩, 취소는 비활성인 채로 **닫을 수 없는 팝업**이 된다. 홈과 토글이
+      // 이미 같은 지적을 받아 넓혔다(리뷰 Important 3).
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _error = apiError.message;
+        _error = error is ApiException ? error.message : '이름을 바꾸지 못했어요.';
       });
       return;
     }
@@ -624,37 +684,44 @@ class _NameChangePopupContentState extends ConsumerState<_NameChangePopupContent
     final colors = Theme.of(context).extension<AppColors>()!;
     final typography = Theme.of(context).extension<AppTypography>()!;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          '이름 변경',
-          textAlign: TextAlign.center,
-          style: typography.title4.copyWith(color: colors.gray3),
-        ),
-        const SizedBox(height: 16),
-        AppInput(
-          controller: _name,
-          hint: '이름을 입력하세요',
-          errorText: _error,
-          prefix: SvgPicture.asset(
-            'assets/icons/user-line.svg',
-            width: 16,
-            height: 21,
-            colorFilter: ColorFilter.mode(colors.gray1, BlendMode.srcIn),
+    // 제출 중에는 시스템 뒤로가기로도 닫히지 않아야 한다 — 빠져나가면
+    // 팝업이 dispose돼 `await` 뒤 `mounted` 가드에 막혀 `onChanged`가 불리지
+    // 않고, **서버는 새 이름인데 세션·홈 상단바·마이페이지는 옛 이름**으로
+    // 갈라진다(리뷰 Important 2).
+    return PopScope(
+      canPop: !_submitting,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            '이름 변경',
+            textAlign: TextAlign.center,
+            style: typography.title4.copyWith(color: colors.gray3),
           ),
-          onChanged: (_) => setState(() => _error = null),
-        ),
-        const SizedBox(height: 16),
-        PopupActionButtons(
-          cancelLabel: '취소',
-          confirmLabel: '수정하기',
-          onCancel: _submitting ? null : widget.onCancel,
-          onConfirm: _submit,
-          isLoading: _submitting,
-        ),
-      ],
+          const SizedBox(height: 16),
+          AppInput(
+            controller: _name,
+            hint: '이름을 입력하세요',
+            errorText: _error,
+            prefix: SvgPicture.asset(
+              'assets/icons/user-line.svg',
+              width: 16,
+              height: 21,
+              colorFilter: ColorFilter.mode(colors.gray1, BlendMode.srcIn),
+            ),
+            onChanged: (_) => setState(() => _error = null),
+          ),
+          const SizedBox(height: 16),
+          PopupActionButtons(
+            cancelLabel: '취소',
+            confirmLabel: '수정하기',
+            onCancel: _submitting ? null : widget.onCancel,
+            onConfirm: _submit,
+            isLoading: _submitting,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -663,7 +730,10 @@ class _NameChangePopupContentState extends ConsumerState<_NameChangePopupContent
 /// 취소/실행 2단 버튼)을 따랐다 — `ProfileScreen._openLogoutConfirmPopup`
 /// 주석 참고.
 class _LogoutConfirmPopupContent extends StatelessWidget {
-  const _LogoutConfirmPopupContent({required this.onCancel, required this.onConfirm});
+  const _LogoutConfirmPopupContent({
+    required this.onCancel,
+    required this.onConfirm,
+  });
 
   final VoidCallback onCancel;
   final VoidCallback onConfirm;

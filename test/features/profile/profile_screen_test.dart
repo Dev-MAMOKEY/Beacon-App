@@ -28,6 +28,36 @@ class _ReadySessionController extends SessionController {
 
 typedef _UpdateCall = ({String name, String? title, bool? pushEnabled});
 
+/// 비밀번호 변경에서 `ApiException`이 **아닌** 예외를 던지는 페이크.
+class _ThrowingPasswordRepository extends _RecordingProfileRepository {
+  @override
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+    required String confirmNewPassword,
+  }) async {
+    changeCalls.add((
+      current: currentPassword,
+      next: newPassword,
+      confirm: confirmNewPassword,
+    ));
+    throw const FormatException('파싱 실패');
+  }
+}
+
+/// `ApiException`이 **아닌** 예외를 던지는 페이크 — 좁은 `catch`를 잡는다.
+class _ThrowingProfileRepository extends _RecordingProfileRepository {
+  @override
+  Future<void> updateProfile({
+    required String name,
+    String? title,
+    bool? pushEnabled,
+  }) async {
+    updateCalls.add((name: name, title: title, pushEnabled: pushEnabled));
+    throw const FormatException('파싱 실패');
+  }
+}
+
 /// 호출 인자를 전부 기록하고, 성패를 테스트가 정할 수 있는 페이크.
 class _RecordingProfileRepository implements ProfileRepository {
   _RecordingProfileRepository({this.updateFailure});
@@ -60,6 +90,15 @@ class _RecordingProfileRepository implements ProfileRepository {
     if (failure != null) throw failure;
   }
 
+  /// [gateChange]가 true면 [releaseChange]를 부를 때까지 응답이 오지 않는다.
+  bool gateChange = false;
+  final List<Completer<void>> _pendingChanges = [];
+
+  void releaseChange() {
+    if (_pendingChanges.isEmpty) throw StateError('대기 중인 changePassword가 없다');
+    _pendingChanges.removeAt(0).complete();
+  }
+
   /// 대기 중인 갱신 하나를 풀어 준다. 대기 중인 것이 없으면 던진다 —
   /// 조용히 no-op이 되면 재현하려던 상황이 만들어지지 않았는데도 초록색이 된다.
   void releaseUpdate() {
@@ -78,6 +117,11 @@ class _RecordingProfileRepository implements ProfileRepository {
       next: newPassword,
       confirm: confirmNewPassword,
     ));
+    if (gateChange) {
+      final completer = Completer<void>();
+      _pendingChanges.add(completer);
+      await completer.future;
+    }
   }
 }
 
@@ -110,11 +154,34 @@ class _RecordingAuthRepository implements AuthRepository {
   );
 }
 
+/// 라우트 스택을 그대로 들여다본다. 팝업이 닫혔는지를 **문구 유무**로
+/// 판정하면 퇴장 애니메이션이 도는 동안 아직 남아 있어 잘못된 구현도
+/// 통과한다(실제로 그랬다).
+class _RouteStackObserver extends NavigatorObserver {
+  final List<Route<dynamic>> stack = [];
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => stack.add(route);
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => stack.remove(route);
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) => stack.remove(route);
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    if (oldRoute != null) stack.remove(oldRoute);
+    if (newRoute != null) stack.add(newRoute);
+  }
+}
+
 typedef _Harness = ({
   ProviderContainer container,
   _RecordingProfileRepository repository,
   _RecordingAuthRepository auth,
   ValueNotifier<bool> visible,
+  _RouteStackObserver routes,
 });
 
 Future<_Harness> _pumpProfile(
@@ -146,12 +213,14 @@ Future<_Harness> _pumpProfile(
   // 탭 전환은 dispose가 아니라 TickerMode를 끄는 것이다.
   final visible = ValueNotifier<bool>(true);
   addTearDown(visible.dispose);
+  final routes = _RouteStackObserver();
 
   await tester.pumpWidget(
     UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
         theme: buildAppTheme(),
+        navigatorObservers: [routes],
         // 실제 앱에서는 AppShell의 Scaffold 안에서 렌더된다 —
         // `showAppToast`가 ScaffoldMessenger를 찾을 수 있어야 한다.
         home: Scaffold(
@@ -167,7 +236,32 @@ Future<_Harness> _pumpProfile(
   );
   await tester.pumpAndSettle();
 
-  return (container: container, repository: repo, auth: auth, visible: visible);
+  return (container: container, repository: repo, auth: auth, visible: visible, routes: routes);
+}
+
+Future<void> _fillPasswordForm(WidgetTester tester) async {
+  await tester.enterText(
+    find.descendant(
+      of: find.byKey(passwordChangeCurrentFieldKey),
+      matching: find.byType(TextField),
+    ),
+    'old-pass1',
+  );
+  await tester.enterText(
+    find.descendant(
+      of: find.byKey(passwordChangeNewFieldKey),
+      matching: find.byType(TextField),
+    ),
+    'new-pass1',
+  );
+  await tester.enterText(
+    find.descendant(
+      of: find.byKey(passwordChangeConfirmFieldKey),
+      matching: find.byType(TextField),
+    ),
+    'new-pass1',
+  );
+  await tester.pump();
 }
 
 bool _switchValue(WidgetTester tester) =>
@@ -185,6 +279,106 @@ void main() {
       findsNothing,
       reason: '마이페이지 본문에는 편집 가능한 칸이 하나도 없다 — 이름조차 팝업에서만 고친다',
     );
+  });
+
+  testWidgets('토글이 떠 있는 동안 이름을 바꾸면 두 쓰기가 순서대로 나간다', (tester) async {
+    // 잡아야 할 잘못된 구현: 토글 쓰기만 직렬화하고 이름 변경은 리포지토리를
+    // 직접 부른다. 두 동작 모두 `PATCH /members/me`를 쓰고 **토글 요청은
+    // `name`을 필수로 함께 보내므로**, 이름 요청이 먼저 적용되고 앞선 토글
+    // 요청이 나중에 도착하면 **서버는 옛 이름으로 끝나는데 화면은 새 이름을
+    // 보여준다**(리뷰 Important 1).
+    //
+    // "보내는 시점에 이름을 읽는다"로는 못 막는다 — 이미 나간 요청은
+    // 되돌릴 수 없다.
+    final repo = _RecordingProfileRepository()..gateUpdate = true;
+    await _pumpProfile(tester, repository: repo, pushEnabled: false);
+
+    // 토글을 눌러 요청을 띄운다(게이트로 붙잡힌다).
+    await tester.tap(find.byType(AppSwitch));
+    await tester.pump();
+    expect(repo.updateCalls, hasLength(1), reason: '사전 조건: 토글 요청이 떠 있다');
+
+    // 그 사이에 이름을 바꿔 제출한다.
+    await tester.tap(find.bySemanticsLabel('이름 변경'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '이도훈');
+    await tester.tap(find.text('수정하기'));
+    await tester.pump();
+
+    expect(
+      repo.updateCalls,
+      hasLength(1),
+      reason: '앞선 토글이 끝나기 전에는 이름 쓰기가 나가면 안 된다',
+    );
+
+    // 토글 응답이 오면 그제서야 이름 쓰기가 나간다.
+    repo.releaseUpdate();
+    await tester.pump();
+    expect(repo.updateCalls, hasLength(2));
+    expect(repo.updateCalls[1].name, '이도훈');
+
+    repo.releaseUpdate();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('이름 제출 중에는 시스템 뒤로가기로 팝업이 닫히지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `PopScope`가 없다. 취소 버튼은 비활성이지만
+    // 안드로이드 뒤로가기는 그대로 통했고, 그렇게 빠져나가면 팝업이 dispose돼
+    // `await` 뒤 `mounted` 가드에 막혀 `onChanged`가 불리지 않는다 —
+    // **서버는 새 이름, 세션·홈 상단바·마이페이지는 옛 이름**(리뷰 Important 2).
+    final repo = _RecordingProfileRepository()..gateUpdate = true;
+    final harness = await _pumpProfile(tester, repository: repo);
+
+    await tester.tap(find.bySemanticsLabel('이름 변경'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '이도훈');
+    await tester.tap(find.text('수정하기'));
+    await tester.pump();
+    expect(harness.routes.stack, hasLength(2), reason: '사전 조건: 팝업이 떠 있다');
+    expect(repo.updateCalls, hasLength(1), reason: '사전 조건: 제출 중이다');
+
+    // 시스템 뒤로가기가 실제로 부르는 것은 `NavigatorState.maybePop`이다.
+    // `tester.binding.handlePopRoute()`는 이 하네스에서 아무 일도 하지 않아
+    // **`PopScope`가 없어도 통과하는 테스트**가 된다(직접 확인했다).
+    //
+    // 제출 중에는 확인 버튼의 스피너가 계속 돌아 `pumpAndSettle`이 끝나지
+    // 않으므로 프레임만 흘린다.
+    // `maybePop`의 반환값은 판별에 쓸 수 없다 — `doNotPop`일 때도 "처리했다"는
+    // 뜻으로 `true`를 돌려준다. 팝업이 남아 있는지로만 판정한다.
+    // `maybePop`의 반환값은 판별에 쓸 수 없다 — `doNotPop`일 때도 "처리했다"는
+    // 뜻으로 `true`를 돌려준다. **라우트 스택**으로 판정한다.
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+    await navigator.maybePop();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(harness.routes.stack, hasLength(2), reason: '제출 중에는 닫히면 안 된다');
+
+    // 제출이 끝나면 다시 닫을 수 있어야 한다 — 영구히 막아 버리면 그것대로
+    // 갇힌다.
+    repo.releaseUpdate();
+    await tester.pumpAndSettle();
+    expect(harness.routes.stack, hasLength(1), reason: '성공하면 팝업이 닫힌다');
+  });
+
+  testWidgets('ApiException이 아닌 예외가 나도 이름 팝업이 잠기지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `on ApiException`만 잡는다. 그 밖의 예외가 새면
+    // `_submitting`이 참으로 굳어, `barrierDismissible: false`인 이 팝업이
+    // **확인은 로딩, 취소는 비활성인 채로 닫을 수 없는 상태**가 된다
+    // (리뷰 Important 3).
+    final repo = _ThrowingProfileRepository();
+    await _pumpProfile(tester, repository: repo);
+
+    await tester.tap(find.bySemanticsLabel('이름 변경'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '이도훈');
+    await tester.tap(find.text('수정하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('이름을 바꾸지 못했어요.'), findsOneWidget);
+    // 취소가 다시 눌릴 수 있어야 한다 = `_submitting`이 풀렸다.
+    await tester.tap(find.text('취소'));
+    await tester.pumpAndSettle();
+    expect(find.text('이름 변경'), findsNothing);
   });
 
   testWidgets('연필을 눌러 이름을 고치면 입력한 이름으로 updateProfile이 불린다', (tester) async {
@@ -411,6 +605,52 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(PasswordChangePopupContent), findsOneWidget);
+  });
+
+  testWidgets('비밀번호 제출 중에는 시스템 뒤로가기로 팝업이 닫히지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `PopScope`가 없다. 그렇게 빠져나가면 팝업이
+    // dispose돼 `await` 뒤 `mounted` 가드에 막혀 `onChanged`가 불리지 않는다 —
+    // **비밀번호가 아무 확인 없이 바뀐다**(리뷰 Important 2).
+    final repo = _RecordingProfileRepository()..gateChange = true;
+    final harness = await _pumpProfile(tester, repository: repo);
+
+    await tester.tap(find.text('3개월에 한번씩 비밀번호 변경이 가능해요'));
+    await tester.pumpAndSettle();
+    await _fillPasswordForm(tester);
+    await tester.tap(find.text('변경하기'));
+    await tester.pump();
+    expect(harness.routes.stack, hasLength(2), reason: '사전 조건: 팝업이 떠 있다');
+    expect(repo.changeCalls, hasLength(1), reason: '사전 조건: 제출 중이다');
+
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+    await navigator.maybePop();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(harness.routes.stack, hasLength(2), reason: '제출 중에는 닫히면 안 된다');
+
+    repo.releaseChange();
+    await tester.pumpAndSettle();
+    expect(harness.routes.stack, hasLength(1), reason: '성공하면 팝업이 닫힌다');
+  });
+
+  testWidgets('ApiException이 아닌 예외가 나도 비밀번호 팝업이 잠기지 않는다', (tester) async {
+    // 잡아야 할 잘못된 구현: `on ApiException`만 잡는다 — `_submitting`이
+    // 참으로 굳어 `barrierDismissible: false`인 팝업이 닫히지 않는다
+    // (리뷰 Important 3).
+    final repo = _ThrowingPasswordRepository();
+    await _pumpProfile(tester, repository: repo);
+
+    await tester.tap(find.text('3개월에 한번씩 비밀번호 변경이 가능해요'));
+    await tester.pumpAndSettle();
+    await _fillPasswordForm(tester);
+    await tester.tap(find.text('변경하기'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('비밀번호를 바꾸지 못했어요.'), findsOneWidget);
+    // 취소가 다시 눌린다 = `_submitting`이 풀렸다.
+    await tester.tap(find.text('취소'));
+    await tester.pumpAndSettle();
+    expect(find.byType(PasswordChangePopupContent), findsNothing);
   });
 
   testWidgets('비밀번호 변경에 성공하면 팝업이 닫히고 마이페이지에 토스트가 뜬다', (tester) async {
