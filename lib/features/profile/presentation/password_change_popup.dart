@@ -55,7 +55,8 @@ class PasswordChangePopupContent extends ConsumerStatefulWidget {
       _PasswordChangePopupContentState();
 }
 
-class _PasswordChangePopupContentState extends ConsumerState<PasswordChangePopupContent> {
+class _PasswordChangePopupContentState
+    extends ConsumerState<PasswordChangePopupContent> {
   final TextEditingController _current = TextEditingController();
   final TextEditingController _next = TextEditingController();
   final TextEditingController _confirm = TextEditingController();
@@ -103,23 +104,34 @@ class _PasswordChangePopupContentState extends ConsumerState<PasswordChangePopup
       _confirmError = confirmError;
       _formError = null;
     });
-    if (currentError != null || nextError != null || confirmError != null) return;
+    if (currentError != null || nextError != null || confirmError != null) {
+      return;
+    }
 
     setState(() => _submitting = true);
 
     try {
-      await ref.read(profileRepositoryProvider).changePassword(
+      await ref
+          .read(profileRepositoryProvider)
+          .changePassword(
             currentPassword: current,
             newPassword: next,
             confirmNewPassword: confirm,
           );
-    } on ApiException catch (error) {
+    } catch (error) {
       // `await` 뒤에는 이 팝업이 이미 닫혔을 수 있다(탭 전환으로 호출 화면이
       // 팝업을 회수하는 경로가 실제로 있다).
+      //
+      // `on ApiException`만 잡으면 그 밖의 예외(파싱 실패 등)가 새어
+      // `_submitting`이 참으로 굳는다. 이 팝업은 `barrierDismissible: false`라
+      // 확인은 로딩, 취소는 비활성인 채로 **닫을 수 없는 팝업**이 된다
+      // (리뷰 Important 3).
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        if (error.code == ErrorCode.invalidCredentials) {
+        if (error is! ApiException) {
+          _formError = '비밀번호를 바꾸지 못했어요.';
+        } else if (error.code == ErrorCode.invalidCredentials) {
           // 요구사항 7 — 해당 칸 아래 인라인이다.
           //
           // 서버 문구를 그대로 쓰지 않는 이유: `INVALID_CREDENTIALS`는
@@ -153,72 +165,80 @@ class _PasswordChangePopupContentState extends ConsumerState<PasswordChangePopup
     final colors = Theme.of(context).extension<AppColors>()!;
     final typography = Theme.of(context).extension<AppTypography>()!;
 
-    return SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            '비밀번호 변경',
-            textAlign: TextAlign.center,
-            style: typography.title4.copyWith(color: colors.gray3),
-          ),
-          const SizedBox(height: 24),
-          AppPasswordInput(
-            key: passwordChangeCurrentFieldKey,
-            controller: _current,
-            // Figma는 이 칸의 라벨/플레이스홀더를 "학번 입력"/"학번을
-            // 입력하세요"로 그려 뒀지만, 그 칸의 아이콘은 `id-card-line`이
-            // 아니라 나머지 둘과 같은 `lock-line`이고(아이콘 컴포넌트
-            // `317:1461`에 `id-card-line`이 따로 있는데도 쓰지 않았다),
-            // `PATCH /members/me/password`의 본문에는 학번 필드 자체가 없다
-            // (`{currentPassword, newPassword, confirmNewPassword}`).
-            // 로그인 화면의 입력 칸을 복제해 만들고 문구만 안 고친 흔적이라
-            // 판단해 의미대로 옮겼다 — 2·3번 칸이 둘 다 "비밀번호 입력"으로
-            // 똑같은 것도 같은 흔적이다. **조정자 판정 대상으로 보고했다.**
-            label: '현재 비밀번호',
-            hint: '현재 비밀번호를 입력하세요',
-            errorText: _currentError,
-            prefix: _LockIcon(color: colors.gray1),
-            onChanged: (_) => _clearError(() => _currentError = null),
-          ),
-          const SizedBox(height: 24),
-          AppPasswordInput(
-            key: passwordChangeNewFieldKey,
-            controller: _next,
-            label: '새 비밀번호',
-            hint: '새 비밀번호를 입력하세요',
-            errorText: _nextError,
-            prefix: _LockIcon(color: colors.gray1),
-            onChanged: (_) => _clearError(() => _nextError = null),
-          ),
-          const SizedBox(height: 24),
-          AppPasswordInput(
-            key: passwordChangeConfirmFieldKey,
-            controller: _confirm,
-            label: '새 비밀번호 확인',
-            hint: '새 비밀번호를 다시 입력하세요',
-            errorText: _confirmError,
-            prefix: _LockIcon(color: colors.gray1),
-            onChanged: (_) => _clearError(() => _confirmError = null),
-          ),
-          if (_formError != null) ...[
-            const SizedBox(height: 16),
+    // 제출 중에는 시스템 뒤로가기로도 닫히지 않아야 한다. 취소 버튼은 이미
+    // 비활성이지만 안드로이드 뒤로가기는 그대로 통했고, 그렇게 빠져나가면
+    // 팝업 콘텐츠가 dispose돼 `await` 뒤 `mounted` 가드에 막혀 `onChanged`가
+    // 불리지 않는다 — **서버는 바뀌었는데 아무 확인도 못 받는다**
+    // (리뷰 Important 2).
+    return PopScope(
+      canPop: !_submitting,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             Text(
-              _formError!,
+              '비밀번호 변경',
               textAlign: TextAlign.center,
-              style: typography.body3.copyWith(color: colors.red),
+              style: typography.title4.copyWith(color: colors.gray3),
+            ),
+            const SizedBox(height: 24),
+            AppPasswordInput(
+              key: passwordChangeCurrentFieldKey,
+              controller: _current,
+              // Figma는 이 칸의 라벨/플레이스홀더를 "학번 입력"/"학번을
+              // 입력하세요"로 그려 뒀지만, 그 칸의 아이콘은 `id-card-line`이
+              // 아니라 나머지 둘과 같은 `lock-line`이고(아이콘 컴포넌트
+              // `317:1461`에 `id-card-line`이 따로 있는데도 쓰지 않았다),
+              // `PATCH /members/me/password`의 본문에는 학번 필드 자체가 없다
+              // (`{currentPassword, newPassword, confirmNewPassword}`).
+              // 로그인 화면의 입력 칸을 복제해 만들고 문구만 안 고친 흔적이라
+              // 판단해 의미대로 옮겼다 — 2·3번 칸이 둘 다 "비밀번호 입력"으로
+              // 똑같은 것도 같은 흔적이다. **조정자 판정 대상으로 보고했다.**
+              label: '현재 비밀번호',
+              hint: '현재 비밀번호를 입력하세요',
+              errorText: _currentError,
+              prefix: _LockIcon(color: colors.gray1),
+              onChanged: (_) => _clearError(() => _currentError = null),
+            ),
+            const SizedBox(height: 24),
+            AppPasswordInput(
+              key: passwordChangeNewFieldKey,
+              controller: _next,
+              label: '새 비밀번호',
+              hint: '새 비밀번호를 입력하세요',
+              errorText: _nextError,
+              prefix: _LockIcon(color: colors.gray1),
+              onChanged: (_) => _clearError(() => _nextError = null),
+            ),
+            const SizedBox(height: 24),
+            AppPasswordInput(
+              key: passwordChangeConfirmFieldKey,
+              controller: _confirm,
+              label: '새 비밀번호 확인',
+              hint: '새 비밀번호를 다시 입력하세요',
+              errorText: _confirmError,
+              prefix: _LockIcon(color: colors.gray1),
+              onChanged: (_) => _clearError(() => _confirmError = null),
+            ),
+            if (_formError != null) ...[
+              const SizedBox(height: 16),
+              Text(
+                _formError!,
+                textAlign: TextAlign.center,
+                style: typography.body3.copyWith(color: colors.red),
+              ),
+            ],
+            const SizedBox(height: 24),
+            PopupActionButtons(
+              cancelLabel: '취소',
+              confirmLabel: '변경하기',
+              onCancel: _submitting ? null : widget.onCancel,
+              onConfirm: _submit,
+              isLoading: _submitting,
             ),
           ],
-          const SizedBox(height: 24),
-          PopupActionButtons(
-            cancelLabel: '취소',
-            confirmLabel: '변경하기',
-            onCancel: _submitting ? null : widget.onCancel,
-            onConfirm: _submit,
-            isLoading: _submitting,
-          ),
-        ],
+        ),
       ),
     );
   }
