@@ -34,6 +34,13 @@ class _RecordingProfileRepository implements ProfileRepository {
     bool? pushEnabled,
   }) async => throw UnimplementedError('이 스위트는 프로필 수정을 하지 않는다');
 
+  final List<String> fcmTokens = [];
+
+  @override
+  Future<void> updateFcmToken(String token) async {
+    fcmTokens.add(token);
+  }
+
   @override
   Future<void> changePassword({
     required String currentPassword,

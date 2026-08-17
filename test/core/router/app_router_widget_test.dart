@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:beacon_app/components/nav/app_top_bar.dart';
 import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/router/app_router.dart';
+import 'package:beacon_app/features/notification/data/push_messaging.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:beacon_app/features/admin/presentation/admin_screen.dart';
 import 'package:beacon_app/core/storage/token_store.dart';
 import 'package:beacon_app/core/theme/app_theme.dart';
@@ -200,6 +204,49 @@ class _ProfileAuthRepository implements AuthRepository {
 /// `container.updateOverrides(...)`로 바꿔치기해, 아무 내비게이션도 하지
 /// 않았는데 provider 값만 바뀌었을 때 redirect가 스스로 재평가되는지
 /// 검증하는 테스트가 있기 때문이다.
+void _foregroundToastTests() {
+  testWidgets('포그라운드 알림이 오면 셸이 토스트로 띄운다', (tester) async {
+    // 잡아야 할 잘못된 구현: 스트림을 구독하지 않는다. 앱이 열려 있는 동안
+    // OS는 배너를 그려 주지 않으므로 **사용자는 알림이 온 줄도 모른다.**
+    final messages = StreamController<RemoteMessage>();
+    addTearDown(messages.close);
+
+    await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      foregroundMessages: messages.stream,
+    );
+
+    messages.add(
+      RemoteMessage(
+        notification: const RemoteNotification(title: '출석 알림', body: '정기모임 출석이 시작되었습니다'),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('정기모임 출석이 시작되었습니다'), findsOneWidget);
+  });
+
+  testWidgets('무음 메시지에는 빈 토스트를 띄우지 않는다', (tester) async {
+    final messages = StreamController<RemoteMessage>();
+    addTearDown(messages.close);
+
+    await _pumpRealRouter(
+      tester,
+      clubIds: const [7],
+      foregroundMessages: messages.stream,
+    );
+
+    messages.add(RemoteMessage(data: const {'type': 'silent'}));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(SnackBar), findsNothing);
+  });
+}
+
 Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
   WidgetTester tester, {
   List<int>? clubIds,
@@ -207,6 +254,7 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
   BeaconScanner? scanner,
   AttendanceRepository? attendanceRepository,
   RecordsRepository? recordsRepository,
+  Stream<RemoteMessage>? foregroundMessages,
 }) async {
   final store = InMemoryTokenStore();
   if (clubIds != null) await store.save(accessToken: 'a', refreshToken: 'r');
@@ -216,6 +264,8 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
       tokenStoreProvider.overrideWithValue(store),
       authRepositoryProvider.overrideWithValue(_ProfileAuthRepository(clubIds ?? const [])),
       showAdminTabProvider.overrideWithValue(showAdmin),
+      if (foregroundMessages != null)
+        foregroundMessageProvider.overrideWith((ref) => foregroundMessages),
       ..._homeScreenOverrides(
         scanner: scanner,
         attendanceRepository: attendanceRepository,
@@ -252,6 +302,8 @@ Future<({GoRouter router, ProviderContainer container})> _pumpRealRouter(
 }
 
 void main() {
+  _foregroundToastTests();
+
   testWidgets(
     '실제 appRouterProvider는 clubIds가 비어 있으면 /invite로 이동해 InviteCodeScreen을 렌더링한다',
     (tester) async {
