@@ -6,7 +6,9 @@ import '../../../components/nav/app_bottom_nav.dart';
 import '../../../components/nav/app_top_bar.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../components/ui/toast.dart';
 import '../../auth/presentation/session_controller.dart';
+import '../../notification/data/push_messaging.dart';
 
 /// `StatefulShellRoute.indexedStack`가 만드는 하단 탭 셸. 탭 4개(홈/기록/
 /// 관리자/마이) 각각이 독립된 네비게이션 스택을 갖고, 탭을 전환해도 이전
@@ -27,6 +29,19 @@ class AppShell extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // 앱이 열려 있는 동안에는 OS가 알림 배너를 그려 주지 않는다 — 우리가
+    // 보여주지 않으면 사용자는 알림이 온 줄도 모른다. 셸은 로그인한 동안만
+    // 살아 있고 `Scaffold`(=`ScaffoldMessenger`)를 갖고 있어 토스트를 띄울
+    // 수 있는 유일한 자리다.
+    ref.listen(foregroundMessageProvider, (previous, next) {
+      final message = next.value;
+      if (message == null) return;
+      final text = foregroundToastText(message);
+      // 데이터만 있는 무음 메시지는 띄울 게 없다 — 빈 토스트를 띄우지 않는다.
+      if (text == null) return;
+      showAppToast(context, text);
+    });
+
     final colors = Theme.of(context).extension<AppColors>()!;
     // ref.read가 아니라 watch다 — Phase 3에서 이 Provider가 실제 role
     // 조회 결과로 교체되면, 이미 셸 안에 있는 사용자도 role이 풀리는
