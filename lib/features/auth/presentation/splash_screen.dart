@@ -10,7 +10,13 @@ import 'session_controller.dart';
 class SplashScreen extends ConsumerWidget {
   const SplashScreen({super.key});
 
-  static const String serviceName = '마모키';
+  /// Figma `333:1477`("온보딩")의 로고 아래 문구.
+  ///
+  /// 명세서는 여기에 **서비스 이름 "마모키"** 를 적으라고 했고 Phase 1은 그
+  /// 대로 구현했다. Figma는 같은 자리에 **태그라인 "간편한 동아리 출석"** 을
+  /// 둔다. 이 프로젝트는 충돌 시 Figma를 따르기로 정했고, #48에서 조정자
+  /// 판정으로 Figma 쪽을 택했다.
+  static const String tagline = '간편한 동아리 출석';
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -36,11 +42,14 @@ class SplashScreen extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const AppLogo(height: 24),
-              const SizedBox(height: 12),
+              // Figma 실측(`333:1478`): 106.045 × 82. 간격 10.
+              const AppLogo(height: 82),
+              const SizedBox(height: 10),
               Text(
-                serviceName,
-                style: typography.body2.copyWith(color: colors.gray2),
+                tagline,
+                textAlign: TextAlign.center,
+                // 실측(`334:1495`): title7(SemiBold 14, 자간 0.7) / main.
+                style: typography.title7.copyWith(color: colors.main),
               ),
               if (message != null) ...[
                 const SizedBox(height: 24),
