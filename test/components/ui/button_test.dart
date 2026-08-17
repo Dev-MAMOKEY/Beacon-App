@@ -20,6 +20,35 @@ Color _backgroundOf(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets('Figma 실측 — 반경 20, primary 전경색은 bg', (tester) async {
+    // 잡아야 할 잘못된 구현: Phase 1의 반경 12와 흰색 전경을 그대로 둔다.
+    // 이 값들은 지금까지 **어떤 테스트도 고정하지 않아서** 무엇으로 바꿔도
+    // 스위트가 초록이었다(#48).
+    //
+    // 실측 출처: `353:1903` 버튼 모음(세 변형 모두 `rounded-[20px]`),
+    // `317:1416` 라벨(`text-[color:var(--bg,#eef7ff)]`).
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: Scaffold(body: AppButton(label: '로그인', onPressed: () {})),
+      ),
+    );
+
+    final surface = tester.widget<AnimatedContainer>(
+      find.byKey(const ValueKey('app_button_surface')),
+    );
+    final decoration = surface.decoration! as BoxDecoration;
+    expect(decoration.borderRadius, BorderRadius.circular(20));
+    expect(decoration.color, AppColors.light.main);
+
+    final label = tester.widget<Text>(find.text('로그인'));
+    expect(
+      label.style!.color,
+      AppColors.light.bg,
+      reason: 'Figma는 흰색이 아니라 bg(#eef7ff)다',
+    );
+  });
+
   testWidgets('primary는 main 색을 배경으로 쓴다', (tester) async {
     await tester.pumpWidget(_host(AppButton(label: '확인', onPressed: () {})));
     await tester.pump();

@@ -64,7 +64,9 @@ class AppButton extends StatelessWidget {
     this.trailing,
   }) : variant = ButtonVariant.cancel;
 
-  static const double radius = 12;
+  /// Figma 실측(`353:1903` 버튼 모음 — 세 변형 모두 `rounded-[20px]`).
+  /// Phase 1은 12로 구현돼 있었다(#48).
+  static const double radius = 20;
 
   final String label;
   final VoidCallback? onPressed;
@@ -155,7 +157,8 @@ AppButtonStyle resolveButtonStyle(
   final typography = Theme.of(context).extension<AppTypography>()!;
 
   final ({Color background, Color foreground}) palette = switch (variant) {
-    ButtonVariant.primary => (background: colors.main, foreground: colors.white),
+    // Figma 실측(`317:1416`): 전경색이 `white`가 아니라 `bg`(#eef7ff)다.
+    ButtonVariant.primary => (background: colors.main, foreground: colors.bg),
     ButtonVariant.destructive => (background: colors.red, foreground: colors.white),
     ButtonVariant.ghost => (background: Colors.transparent, foreground: colors.gray3),
     ButtonVariant.cancel => (background: colors.gray1, foreground: colors.white),

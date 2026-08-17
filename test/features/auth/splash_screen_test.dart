@@ -1,4 +1,6 @@
+import 'package:beacon_app/components/ui/app_logo.dart';
 import 'package:beacon_app/components/ui/button.dart';
+import 'package:beacon_app/core/theme/app_colors.dart';
 import 'package:beacon_app/core/network/api_exception.dart';
 import 'package:beacon_app/core/network/dio_provider.dart';
 import 'package:beacon_app/core/network/error_code.dart';
@@ -113,7 +115,32 @@ void main() {
 
     expect(find.text('재시도'), findsNothing);
     expect(find.byType(AppButton), findsNothing);
-    // 서비스명은 어떤 상태에서든 항상 보인다.
-    expect(find.text('마모키'), findsOneWidget);
+    // 태그라인은 어떤 상태에서든 항상 보인다.
+    expect(find.text('간편한 동아리 출석'), findsOneWidget);
+  });
+
+  testWidgets('Figma 실측 — 로고 82, 간격 10, 태그라인은 title7/main', (tester) async {
+    // 잡아야 할 잘못된 구현: Phase 1의 로고 24 / 간격 12 / body2·gray2 문구.
+    // 이 값들은 지금까지 어떤 테스트도 고정하지 않아 무엇으로 바꿔도 통과했다.
+    //
+    // 실측 출처: `333:1477` "온보딩" — 로고 `333:1478`(106.045 × 82),
+    // 태그라인 `334:1495`(title7, `main`), 간격 10.
+    //
+    // **문구는 명세서("마모키")와 충돌한다.** #48에서 조정자가 Figma를
+    // 따르기로 판정했고, 그 판정을 이 테스트가 고정한다.
+    await _pumpSplash(tester, _FlakyAuthRepository(), withStoredTokens: false);
+
+    final logo = tester.widget<AppLogo>(find.byType(AppLogo));
+    expect(logo.height, 82);
+
+    final tagline = tester.widget<Text>(find.text('간편한 동아리 출석'));
+    expect(tagline.style!.color, AppColors.light.main, reason: 'gray2가 아니라 main이다');
+    expect(tagline.style!.fontSize, 14, reason: 'title7(14)이다 — body2(16)가 아니다');
+    expect(tagline.style!.fontWeight, FontWeight.w600);
+
+    final gap = tester.widgetList<SizedBox>(find.byType(SizedBox)).where(
+      (box) => box.height == 10,
+    );
+    expect(gap, isNotEmpty, reason: '로고와 태그라인 사이 간격은 10이다');
   });
 }

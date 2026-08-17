@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -117,6 +118,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 label: '로그인',
                 isLoading: _isSubmitting,
                 onPressed: _canSubmit ? _submit : null,
+                // Figma 버튼 컴포넌트 `317:1419`("속성 1=버튼")는 라벨 뒤에
+                // 셰브론을 단다 — 로그인·회원가입 버튼이 그 variant다(#48).
+                trailing: SvgPicture.asset(
+                  'assets/icons/chevron-right.svg',
+                  width: 7.78,
+                  height: 12.73,
+                  colorFilter: ColorFilter.mode(colors.bg, BlendMode.srcIn),
+                ),
               ),
               const SizedBox(height: 20),
               GestureDetector(
