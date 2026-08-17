@@ -8,6 +8,7 @@ import 'package:beacon_app/features/admin/data/session_dto.dart';
 import 'package:beacon_app/features/admin/data/session_repository.dart';
 import 'package:beacon_app/features/admin/presentation/admin_screen.dart';
 import 'package:beacon_app/features/admin/presentation/attendance_status_popup.dart';
+import 'package:beacon_app/features/admin/presentation/manual_attendance_popup.dart';
 import 'package:beacon_app/features/admin/presentation/admin_session_card.dart';
 import 'package:beacon_app/features/auth/data/auth_dto.dart';
 import 'package:beacon_app/features/auth/presentation/session_controller.dart';
@@ -75,12 +76,14 @@ class _ScriptedSessionRepository implements SessionRepository {
   final List<(int memberId, AttendanceStatus status)> manualAdds = [];
 
   bool attendanceThrows = false;
+  int attendanceCalls = 0;
 
   @override
   Future<List<AdminAttendanceRecord>> fetchAttendance({
     required int clubId,
     required int sessionId,
   }) async {
+    attendanceCalls++;
     if (attendanceThrows) throw Exception('조회 실패');
     return attendanceRecords;
   }
@@ -190,7 +193,9 @@ class _StubMemberRepository implements ClubMemberRepository {
   @override
   Future<List<ClubMember>> fetchMembers(int clubId) async => List.generate(
     count,
-    (i) => ClubMember(memberId: i, name: '$i', stdId: '$i', role: ClubRole.member),
+    // 이름과 학번을 **서로 다른 모양**으로 만든다 — 둘 다 '$i'면 어느 쪽을
+    // 찾았는지 테스트가 구별하지 못한다.
+    (i) => ClubMember(memberId: i, name: '부원$i', stdId: '2025000$i', role: ClubRole.member),
   );
 }
 
@@ -569,6 +574,161 @@ void main() {
       expect(repo.statusUpdates, hasLength(1));
       expect(repo.statusUpdates.single.$1, 1);
       expect(repo.statusUpdates.single.$2, AttendanceStatus.late);
+    });
+
+    testWidgets('ACTIVE 세션은 주기적으로 목록을 다시 읽는다', (tester) async {
+      // 명세서가 MVP는 SSE가 아니라 폴링 우선으로 규정한다(#16).
+      //
+      // **간격을 상수로 pump하지 않는다** — `pump(attendanceRefreshInterval)`
+      // 로 검사하면 상수를 1시간으로 바꿔도 통과한다(#63에서 실제로 그
+      // 함정을 밟았다). 리터럴 시간으로 앞뒤를 조인다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        record(id: 1, name: '강네모', status: AttendanceStatus.present),
+      ];
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      final initial = repo.attendanceCalls;
+
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      expect(repo.attendanceCalls, initial, reason: '10초 만에 다시 읽으면 너무 잦다');
+
+      await tester.pump(const Duration(seconds: 25));
+      await tester.pumpAndSettle();
+      expect(
+        repo.attendanceCalls,
+        greaterThan(initial),
+        reason: '35초 안에 따라잡지 못하면 폴링의 의미가 없다',
+      );
+    });
+
+    testWidgets('끝난 세션은 폴링하지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 상태와 무관하게 폴링한다 — 끝난 세션의 기록은
+      // 더 바뀌지 않으므로 그대로 낭비다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 3, status: SessionStatus.ended)],
+      );
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(EndedSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      final initial = repo.attendanceCalls;
+
+      await tester.pump(const Duration(seconds: 90));
+      await tester.pumpAndSettle();
+
+      expect(repo.attendanceCalls, initial);
+    });
+
+    testWidgets('폴링 중 일시적 실패로 보고 있던 목록을 지우지 않는다', (tester) async {
+      // 잡아야 할 잘못된 구현: 폴링 실패도 화면을 실패 상태로 되돌린다 —
+      // 관리자가 읽고 있던 목록이 사라지고 다음 주기에 다시 나타난다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        record(id: 1, name: '강네모', status: AttendanceStatus.present),
+      ];
+      await _pumpAdmin(tester, repository: repo);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      expect(find.text('강네모'), findsOneWidget);
+
+      repo.attendanceThrows = true;
+      await tester.pump(const Duration(seconds: 35));
+      await tester.pumpAndSettle();
+
+      expect(find.text('강네모'), findsOneWidget, reason: '보고 있던 목록이 사라지면 안 된다');
+      expect(find.text('출석 현황을 불러오지 못했습니다'), findsNothing);
+    });
+
+    testWidgets('수동 출석은 기록이 없는 부원만 후보로 준다', (tester) async {
+      // 잡아야 할 잘못된 구현: 전체 부원을 후보로 준다 — 이미 기록이 있는
+      // 사람을 또 넣으면 서버가 중복으로 거절하거나 기존 기록을 덮어쓴다.
+      // 그건 상태 변경으로 해야 할 일이다.
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      )..attendanceRecords = [
+        record(id: 1, name: '부원1', status: AttendanceStatus.present),
+      ];
+      await _pumpAdmin(tester, repository: repo, memberCount: 3);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('수동 출석'));
+      await tester.pumpAndSettle();
+
+      // 더블의 멤버는 memberId 0,1,2 — 기록이 있는 1번이 빠져야 한다.
+      //
+      // **팝업 안으로 한정해야 한다** — 시트의 출석 행에도 같은 이름이
+      // 보이므로, 화면 전체에서 찾으면 후보에서 빠졌는지 알 수 없다.
+      Finder inPopup(String text) => find.descendant(
+        of: find.byType(ManualAttendancePopupContent),
+        matching: find.text(text),
+      );
+
+      expect(inPopup('부원0'), findsOneWidget);
+      expect(inPopup('부원2'), findsOneWidget);
+      expect(inPopup('부원1'), findsNothing, reason: '이미 기록이 있는 부원은 후보에서 빠진다');
+    });
+
+    testWidgets('수동 출석을 등록하면 서버로 memberId와 상태를 보낸다', (tester) async {
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      );
+      await _pumpAdmin(tester, repository: repo, memberCount: 2);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('수동 출석'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('부원1'));
+      await tester.pump();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(ManualAttendancePopupContent),
+          matching: find.text('지각'),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('등록하기'));
+      await tester.pumpAndSettle();
+
+      expect(repo.manualAdds, [(1, AttendanceStatus.late)]);
+    });
+
+    testWidgets('부원을 고르지 않으면 등록하지 않는다', (tester) async {
+      final repo = _ScriptedSessionRepository(
+        sessions: [_session(id: 4, status: SessionStatus.active)],
+      );
+      await _pumpAdmin(tester, repository: repo, memberCount: 2);
+
+      await tester.tap(find.byType(ActiveSessionCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('출석 현황'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('수동 출석'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('등록하기'));
+      await tester.pumpAndSettle();
+
+      expect(repo.manualAdds, isEmpty);
+      expect(find.text('부원을 선택해주세요'), findsOneWidget);
     });
 
     testWidgets('조회가 실패하면 빈 목록이 아니라 실패를 알린다', (tester) async {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../components/ui/button.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../../core/time/kst.dart';
@@ -30,6 +31,7 @@ class AttendanceStatusSheetContent extends StatelessWidget {
     required this.sessionName,
     required this.records,
     required this.onTapRecord,
+    required this.onAddManual,
     this.isLoading = false,
     this.loadFailed = false,
   });
@@ -37,6 +39,10 @@ class AttendanceStatusSheetContent extends StatelessWidget {
   final String sessionName;
   final List<AdminAttendanceRecord> records;
   final ValueChanged<AdminAttendanceRecord> onTapRecord;
+
+  /// 비콘을 아예 못 잡은 부원은 목록에 없다 — 웹 표에도 없다. 손으로 넣는
+  /// 경로가 없으면 그 부원은 영영 결석으로 남는다.
+  final VoidCallback onAddManual;
   final bool isLoading;
   final bool loadFailed;
 
@@ -49,9 +55,21 @@ class AttendanceStatusSheetContent extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(sessionName, style: typography.title4.copyWith(color: colors.gray3)),
-        const SizedBox(height: 4),
-        Text('출석 현황', style: typography.body3.copyWith(color: colors.gray2)),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(sessionName, style: typography.title4.copyWith(color: colors.gray3)),
+                  const SizedBox(height: 4),
+                  Text('출석 현황', style: typography.body3.copyWith(color: colors.gray2)),
+                ],
+              ),
+            ),
+            AppButton(label: '수동 출석', size: ButtonSize.md, onPressed: onAddManual),
+          ],
+        ),
         const SizedBox(height: 20),
         if (isLoading)
           const Padding(
