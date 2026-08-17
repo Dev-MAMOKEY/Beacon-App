@@ -12,13 +12,17 @@ void showAppToast(BuildContext context, String message) {
     ..hideCurrentSnackBar()
     ..showSnackBar(
       SnackBar(
+        // Figma 실측(`405:2325` "변경 알림"): 흰 배경 / gray2 글자 /
+        // body2(16) / 반경 20 / 좌우 40·상하 16 패딩. Phase 1은 정반대로
+        // (gray3 배경 / 흰 글자 / body3 / 반경 12) 구현돼 있었다(#48).
         content: Text(
           message,
-          style: typography.body3.copyWith(color: colors.white),
+          style: typography.body2.copyWith(color: colors.gray2),
         ),
-        backgroundColor: colors.gray3,
+        backgroundColor: colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         duration: const Duration(seconds: 2),
       ),
     );

@@ -57,7 +57,8 @@ class AppInput extends StatelessWidget {
       children: [
         if (label != null) ...[
           ExcludeSemantics(
-            child: Text(label!, style: typography.title7.copyWith(color: colors.gray2)),
+            // Figma 실측(`317:1515`): 라벨은 gray2가 아니라 gray3다.
+            child: Text(label!, style: typography.title7.copyWith(color: colors.gray3)),
           ),
           const SizedBox(height: 8),
         ],
@@ -75,7 +76,11 @@ class AppInput extends StatelessWidget {
             decoration: InputDecoration(
               counterText: '',
               hintText: hint,
-              hintStyle: typography.body2.copyWith(color: colors.gray1),
+              // Figma 실측(`317:1435`): 힌트는 gray1이 아니라 **gray3의 40%**이고
+              // 크기도 body2(16)가 아니라 body3(14)다.
+              hintStyle: typography.body3.copyWith(
+                color: colors.gray3.withValues(alpha: 0.4),
+              ),
               filled: true,
               fillColor: colors.white,
               prefixIcon: prefix == null
@@ -98,11 +103,11 @@ class AppInput extends StatelessWidget {
                 bottom: 18,
               ),
               enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide(color: hasError ? colors.red : colors.gray4),
               ),
               focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 borderSide: BorderSide(
                   color: hasError ? colors.red : colors.main,
                   width: 2,

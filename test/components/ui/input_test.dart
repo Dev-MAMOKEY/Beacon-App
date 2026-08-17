@@ -18,6 +18,38 @@ Color _enabledBorderColorOf(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets('Figma 실측 — 반경 16, 라벨 gray3, 힌트는 gray3의 40%', (tester) async {
+    // 잡아야 할 잘못된 구현: Phase 1의 반경 12 / 라벨 gray2 / 힌트 gray1.
+    // 실측 출처: `317:1452` 입력 칸(`rounded-[16px]`), `317:1515` 라벨
+    // (`#414754` = gray3), `317:1435` 힌트(`rgba(65,71,84,0.4)`).
+    //
+    // **이슈에 적힌 "배경 gray4"는 틀렸다** — 실측은 흰색이고 현재 구현이 맞다.
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: Scaffold(
+          body: AppInput(
+            controller: TextEditingController(),
+            label: '학번',
+            hint: '학번을 입력하세요',
+          ),
+        ),
+      ),
+    );
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    final border = field.decoration!.enabledBorder! as OutlineInputBorder;
+    expect(border.borderRadius, BorderRadius.circular(16));
+    expect(field.decoration!.fillColor, AppColors.light.white);
+
+    final label = tester.widget<Text>(find.text('학번'));
+    expect(label.style!.color, AppColors.light.gray3, reason: 'gray2가 아니다');
+
+    final hintStyle = field.decoration!.hintStyle!;
+    expect(hintStyle.fontSize, 14, reason: 'body3(14)다');
+    expect(hintStyle.color!.a, closeTo(0.4, 0.01), reason: 'gray3의 40%다');
+  });
+
   group('AppInput', () {
     testWidgets('errorText가 있으면 테두리가 red이고 에러 메시지가 보인다', (tester) async {
       final controller = TextEditingController();
