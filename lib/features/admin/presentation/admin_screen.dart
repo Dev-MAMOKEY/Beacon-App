@@ -12,10 +12,12 @@ import '../../../components/ui/toast.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_typography.dart';
 import '../../auth/presentation/session_controller.dart';
+import '../data/beacon_psk_store.dart';
 import '../data/session_dto.dart';
 import '../data/session_repository.dart';
 import 'admin_role_controller.dart';
 import 'admin_session_card.dart';
+import 'beacon_psk_popup.dart';
 import 'session_form_popup.dart';
 
 /// 관리자 세션 관리 화면(Figma `353:2033` "관리자 페이지").
@@ -158,6 +160,50 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
     } finally {
       if (mounted) setState(() => _ending = false);
     }
+  }
+
+  /// 시작 전에 비콘 PSK가 있는지 확인하고, 없으면 그 자리에서 묻는다.
+  ///
+  /// PSK는 서버가 주지 않는다 — 펌웨어에 구워진 값과 같아야 GATT 명령이
+  /// 받아들여지므로 관리자에게 직접 받아 이 기기에만 저장한다. 관리자 설정
+  /// 화면(#18)이 웹 전용이라 갈 곳이 없고, **PSK가 실제로 쓰이는 유일한
+  /// 순간**이 여기다.
+  Future<void> _ensurePsk(int clubId, AdminSession session) async {
+    final store = ref.read(beaconPskStoreProvider);
+    String? existing;
+    try {
+      existing = await store.read();
+    } catch (_) {
+      existing = null;
+    }
+    if (!mounted) return;
+
+    if (existing != null && isValidBeaconPsk(existing)) {
+      await _startSession(clubId, session);
+      return;
+    }
+
+    _owned.push(
+      buildAppPopupRoute<void>(
+        context: context,
+        navigator: _rootNavigator,
+        builder: (_) => BeaconPskPopupContent(
+          initial: existing,
+          onCancel: _owned.closeAll,
+          onSubmit: (psk) async {
+            _owned.closeAll();
+            try {
+              await store.save(psk);
+            } catch (_) {
+              // 검증은 팝업이 이미 했다 — 저장 자체가 실패하면(보안 저장소
+              // 오류) 시작은 계속 진행한다. PSK 없이도 서버 세션은 열린다.
+            }
+            if (!mounted) return;
+            await _startSession(clubId, session);
+          },
+        ),
+      ),
+    );
   }
 
   /// 세션을 시작하고 출석 코드를 받아 둔다.
@@ -320,7 +366,7 @@ class _AdminScreenState extends ConsumerState<AdminScreen> {
                           session: item,
                           onTap: clubId == null ? () {} : () => _openActions(clubId, item),
                           onStart: item.status == SessionStatus.scheduled && clubId != null
-                              ? () => unawaited(_startSession(clubId, item))
+                              ? () => unawaited(_ensurePsk(clubId, item))
                               : null,
                           isStarting: _starting,
                         );
