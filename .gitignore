@@ -32,6 +32,9 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# Gradle이 android/ 아래에도 산출물을 만든다 — 루트 /build/ 규칙에 걸리지 않는다.
+/android/build/
+/android/.gradle/
 
 # Symbolication related
 app.*.symbols
@@ -43,3 +46,32 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# 환경 변수 — .env.example만 커밋한다
+.env
+
+# 릴리즈 서명 키 — key.properties.example만 커밋한다. 리포가 public이므로
+# 이 값들이 들어가면 누구나 이 앱 이름으로 서명된 APK를 만들 수 있다.
+/android/key.properties
+*.jks
+*.keystore
+
+# .env의 API_BASE_URL 호스트를 빌드 시점에 주입해 생성되는 파일 —
+# android/app/build.gradle.kts의 generateNetworkSecurityConfig 태스크가 만든다.
+# 커밋 대상은 network_security_config.template.xml뿐이다.
+/android/app/src/main/res/xml/network_security_config.xml
+
+# Firebase 설정 — API 키와 프로젝트 식별자가 들어 있어 커밋하지 않는다.
+# 리포가 public이라 `.env`·서명 키와 같은 규약을 따른다.
+#
+# 새로 받으려면(Firebase CLI 로그인 후):
+#   flutterfire configure --project=<프로젝트 id> --platforms=android,ios \
+#     --android-package-name=com.mamokey.beacon --ios-bundle-id=com.mamokey.beacon
+#
+# `firebase_options.dart`는 앱 코드가 import하므로 **없으면 빌드가 깨진다** —
+# `.env`와 같이 각자 로컬에서 생성하거나 CI 시크릿으로 주입해야 한다.
+/lib/firebase_options.dart
+/android/app/google-services.json
+/ios/Runner/GoogleService-Info.plist
+/firebase.json
+/.firebaserc

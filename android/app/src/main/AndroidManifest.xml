@@ -1,8 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- debug/profile 오버레이에도 같은 권한이 있지만 그건 개발 도구용이다.
+         릴리스 빌드에는 그 오버레이가 병합되지 않으므로, 여기 없으면 릴리스
+         APK가 네트워크에 전혀 닿지 못한다. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- iBeacon ranging에 필요한 BLE 권한. BLUETOOTH_SCAN에 neverForLocation을
+         붙이지 않는다 — 붙이면 시스템이 "위치 목적이 아니다"로 간주해 이
+         스캔 결과로 실제 위치(근접도)를 추정하는 걸 허용하지 않는데, 우리는
+         정확히 그 근접도로 출석을 판정하므로 위치 목적이 맞다. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <application
         android:label="beacon_app"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

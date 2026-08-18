@@ -26,6 +26,17 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- dchs_flutter_beacon이 iOS에서 CoreLocation/CoreBluetooth 권한을
+	     요청하려면 이 사용 목적 문자열이 반드시 있어야 한다 — 없으면 권한
+	     조회 자체에서 앱이 즉시 종료된다. iOS 빌드는 이 저장소에서 검증하지
+	     않지만(오너 결정, CocoaPods 미설치), 나중에 빌드될 때 곧바로 죽는
+	     코드를 남겨두지 않기 위해 미리 채운다. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>동아리 활동 장소 근처에 있는지 확인해 출석을 인정하기 위해 위치 권한이 필요합니다.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>동아리 활동 장소 근처에 있는지 확인해 출석을 인정하기 위해 위치 권한이 필요합니다.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>출석 체크를 위해 동아리 활동 장소에 설치된 비콘 신호를 감지하려면 블루투스 권한이 필요합니다.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
